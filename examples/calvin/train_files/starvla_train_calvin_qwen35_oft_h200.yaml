@@ -9,7 +9,7 @@ version_id: "0.21"
 framework:
   name: QwenOFT
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen3.5-0.8B
+    base_vlm: ./playground/Pretrained_models/Qwen3.5-9B
     attn_implementation: sdpa
   action_model:
     action_model_type: MLP

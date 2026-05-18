@@ -6,6 +6,7 @@ cd "$(dirname "$0")/../../.."
 export PROJECT_ROOT=${PROJECT_ROOT:-$(pwd)}
 export CONDA_ROOT=${CONDA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3}
 export STARVLA_ENV=${STARVLA_ENV:-starVLA_qwen35}
+export H200_QWEN35_9B=${H200_QWEN35_9B:-./playground/Pretrained_models/Qwen3.5-9B}
 export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
@@ -20,7 +21,7 @@ export TRAIN_GPUS=${TRAIN_GPUS:-0,1,2,3,4,5,6,7}
 export NUM_PROCESSES=${NUM_PROCESSES:-8}
 export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29600}
 export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-16}
-if [[ "${ROUTE}" == "p4_qwen4b_pi" || "${ROUTE}" == "p4_pi" ]]; then
+if [[ "${ROUTE}" == "p4_pi" ]]; then
   export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_pi_h200.yaml}
 else
   export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml}
@@ -57,38 +58,31 @@ export CALVIN_CONFIG_PATH=${CALVIN_CONFIG_PATH:-"${PROJECT_ROOT}/calvin/calvin_m
 export EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
 export GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH:-quiet}
 export CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA:-1}
+export CALVIN_FORCE_NO_EGL=${CALVIN_FORCE_NO_EGL:-1}
 
 mkdir -p "${LOG_ROOT}/terminal" "${LOG_ROOT}/summary"
 
-select_largest_qwen35() {
-  for candidate in \
-    ./playground/Pretrained_models/Qwen3.5-9B \
-    ./playground/Pretrained_models/Qwen3.5-4B \
-    ./playground/Pretrained_models/Qwen3.5-2B \
-    ./playground/Pretrained_models/Qwen3.5-0.8B
-  do
-    if [[ -f "${candidate}/config.json" ]]; then
-      echo "${candidate}"
-      return 0
-    fi
-  done
-  return 1
-}
-
 if [[ -z "${BASE_VLM:-}" ]]; then
-  if [[ "${ROUTE}" == "p4_qwen4b_pi" || "${ROUTE}" == "p4_pi" ]]; then
-    BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
-  else
-    BASE_VLM=$(select_largest_qwen35) || {
-      echo "No Qwen3.5 weight found under playground/Pretrained_models" >&2
-      exit 2
-    }
-  fi
+  BASE_VLM="${H200_QWEN35_9B}"
   export BASE_VLM
+fi
+
+if [[ ! -f "${H200_QWEN35_9B}/config.json" ]]; then
+  echo "Required Qwen3.5-9B weight not found: ${H200_QWEN35_9B}/config.json" >&2
+  exit 2
 fi
 
 if [[ ! -f "${BASE_VLM}/config.json" ]]; then
   echo "BASE_VLM does not contain config.json: ${BASE_VLM}" >&2
+  exit 2
+fi
+
+base_vlm_resolved=$(readlink -f "${BASE_VLM}")
+qwen35_9b_resolved=$(readlink -f "${H200_QWEN35_9B}")
+if [[ "${base_vlm_resolved}" != "${qwen35_9b_resolved}" ]]; then
+  echo "H200 fast explore requires Qwen3.5-9B for every route." >&2
+  echo "BASE_VLM=${BASE_VLM} -> ${base_vlm_resolved}" >&2
+  echo "H200_QWEN35_9B=${H200_QWEN35_9B} -> ${qwen35_9b_resolved}" >&2
   exit 2
 fi
 
@@ -179,6 +173,7 @@ print(
     "GitPython import OK: "
     f"refresh={os.environ.get('GIT_PYTHON_REFRESH')}, "
     f"offline_metadata={os.environ.get('CALVIN_ALLOW_OFFLINE_GIT_METADATA')}, "
+    f"force_no_egl={os.environ.get('CALVIN_FORCE_NO_EGL')}, "
     f"git={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE', '<unset>')}"
 )
 PY
@@ -201,6 +196,7 @@ echo "ROUTE=${ROUTE}"
 echo "TRAIN_GPUS=${TRAIN_GPUS}"
 echo "NUM_PROCESSES=${NUM_PROCESSES}"
 echo "MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT}"
+echo "H200_QWEN35_9B=${H200_QWEN35_9B}"
 echo "BASE_VLM=${BASE_VLM}"
 echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
 echo "LOG_ROOT=${LOG_ROOT}"
@@ -209,11 +205,38 @@ echo "EVAL_PORT=${EVAL_PORT}"
 echo "EVAL_GPU=${EVAL_GPU}"
 echo "GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH}"
 echo "CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA}"
+echo "CALVIN_FORCE_NO_EGL=${CALVIN_FORCE_NO_EGL}"
 echo "GIT_PYTHON_GIT_EXECUTABLE=${GIT_PYTHON_GIT_EXECUTABLE:-<unset>}"
 echo "H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-<disabled>}"
 echo "SMOKE_STEPS=${SMOKE_STEPS}"
 echo "FAST_STEPS=${FAST_STEPS}"
 echo "DECISION_STEPS=${DECISION_STEPS}"
+
+ensure_eval_port_free() {
+  local port=$1
+
+  EVAL_PORT_TO_CHECK="${port}" "${STAR_VLA_PYTHON}" - <<'PY'
+import os
+import socket
+import sys
+
+port = int(os.environ["EVAL_PORT_TO_CHECK"])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind(("0.0.0.0", port))
+except OSError as exc:
+    print(
+        f"EVAL_PORT={port} is already in use before policy server launch: {exc}. "
+        "Use a fresh EVAL_PORT/P0_EVAL_PORT/P4_EVAL_PORT or stop the stale policy server.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+finally:
+    sock.close()
+
+print(f"EVAL_PORT={port} is available before policy server launch")
+PY
+}
 
 wait_for_policy_server() {
   local server_pid=$1
@@ -222,12 +245,15 @@ wait_for_policy_server() {
   local waited=0
 
   while [[ "${waited}" -lt "${timeout}" ]]; do
-    if [[ -f "${server_log}" ]] && grep -q "server running" "${server_log}"; then
+    if [[ -f "${server_log}" ]] && grep -q "server listening" "${server_log}"; then
       return 0
     fi
     if ! kill -0 "${server_pid}" 2>/dev/null; then
       echo "Policy server exited before ready. Log: ${server_log}" >&2
       wait "${server_pid}" || true
+      if [[ -f "${server_log}" ]]; then
+        tail -n 120 "${server_log}" >&2 || true
+      fi
       return 1
     fi
     sleep 2
@@ -235,6 +261,9 @@ wait_for_policy_server() {
   done
 
   echo "Policy server did not become ready within ${timeout}s. Log: ${server_log}" >&2
+  if [[ -f "${server_log}" ]]; then
+    tail -n 120 "${server_log}" >&2 || true
+  fi
   return 1
 }
 
@@ -254,6 +283,7 @@ run_eval_stage() {
 
   echo "===== START eval stage=${stage_name} route=${ROUTE} steps=${steps} num_sequences=${num_sequences} ====="
   mkdir -p "${server_dir}" "${eval_dir}"
+  ensure_eval_port_free "${EVAL_PORT}"
 
   CKPT_PATH="${ckpt_path}" \
   PORT="${EVAL_PORT}" \
@@ -286,6 +316,7 @@ run_eval_stage() {
   CALVIN_PYTHON="${CALVIN_PYTHON}" \
   GIT_PYTHON_REFRESH="${GIT_PYTHON_REFRESH}" \
   CALVIN_ALLOW_OFFLINE_GIT_METADATA="${CALVIN_ALLOW_OFFLINE_GIT_METADATA}" \
+  CALVIN_FORCE_NO_EGL="${CALVIN_FORCE_NO_EGL}" \
   GIT_PYTHON_GIT_EXECUTABLE="${GIT_PYTHON_GIT_EXECUTABLE:-}" \
   bash examples/calvin/eval_files/eval_calvin_debug.sh
   eval_status=$?

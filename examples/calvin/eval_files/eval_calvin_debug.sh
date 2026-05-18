@@ -8,6 +8,7 @@ export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-osmesa}
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
 export GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH:-quiet}
 export CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA:-1}
+export CALVIN_FORCE_NO_EGL=${CALVIN_FORCE_NO_EGL:-1}
 
 RUN_ID=${RUN_ID:-calvin_eval_debug}
 RUN_TS=${RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
@@ -33,6 +34,7 @@ cp "$0" "${LOG_DIR}/configs/"
   echo "PORT=${PORT}"
   echo "GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH}"
   echo "CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA}"
+  echo "CALVIN_FORCE_NO_EGL=${CALVIN_FORCE_NO_EGL}"
   echo "GIT_PYTHON_GIT_EXECUTABLE=${GIT_PYTHON_GIT_EXECUTABLE:-<unset>}"
 
   "${CALVIN_PYTHON}" - <<'PY'
@@ -43,6 +45,7 @@ print(
     "GitPython import OK, "
     f"refresh={os.environ.get('GIT_PYTHON_REFRESH')}, "
     f"offline_metadata={os.environ.get('CALVIN_ALLOW_OFFLINE_GIT_METADATA')}, "
+    f"force_no_egl={os.environ.get('CALVIN_FORCE_NO_EGL')}, "
     f"git={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE', '<unset>')}"
 )
 PY

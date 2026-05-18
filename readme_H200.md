@@ -27,7 +27,7 @@ P0: p0_oft              Qwen3.5 + OFT
 P1: p1_adapter          Qwen3.5 + Adapter
 P2: p2_lora_oft         Qwen3.5 + LoRA + OFT
 P3: p3_lora_adapter     Qwen3.5 + LoRA + Adapter
-P4: p4_qwen4b_pi        Qwen3.5-4B + PI / Flow-Matching
+P4: p4_pi               Qwen3.5-9B + PI / Flow-Matching
 ```
 
 本地单独 smoke / 短训 PI（不跑五路线流水线）见：[examples/calvin/train_files/README_qwen35_pi_train.md](examples/calvin/train_files/README_qwen35_pi_train.md)。
@@ -64,12 +64,15 @@ export H200_CALVIN_DATA_NAME=calvin_task_ABC_D
 export H200_CALVIN_DATA_MIX=calvin_abc_d_h200
 export H200_CALVIN_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
 export H200_CALVIN_EVAL_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/task_D_D"
+export H200_QWEN35_9B="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-9B"
+export BASE_VLM="${H200_QWEN35_9B}"
 
 export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
 export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
 export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
 export GIT_PYTHON_REFRESH=quiet
 export CALVIN_ALLOW_OFFLINE_GIT_METADATA=1
+export CALVIN_FORCE_NO_EGL=1
 
 export LOG_ROOT=logs/h200_fastexplore
 export OBS_IMAGE_SIZE='[224,224]'
@@ -106,10 +109,10 @@ test -x "${CALVIN_PYTHON}"
 nvidia-smi
 ```
 
-P4 需要 4B 权重：
+所有路线都强制使用 9B 权重：
 
 ```bash
-test -f playground/Pretrained_models/Qwen3.5-4B/config.json
+test -f "${H200_QWEN35_9B}/config.json"
 ```
 
 如果 `cv2` 报 `ImportError: libGL.so.1`，先修 `calvin` 环境再跑训练。评测必须产出 mp4，所以这里不能跳过：
@@ -145,6 +148,14 @@ conda activate "${STARVLA_ENV}"
   --timeout 120 --retries 20 --root-user-action=ignore \
   "opencv-python-headless==4.11.0.86"
 ```
+
+如果评测日志卡在 `Loading EGL plugin` 后报 `failed to EGL with glad`，说明服务器 EGL 渲染栈不可用。当前脚本默认走 PyBullet DIRECT/no-EGL 路径：
+
+```bash
+export CALVIN_FORCE_NO_EGL=1
+```
+
+这不是跳过评测；脚本仍要求生成 `results.json` 和至少一个 mp4，否则会报错退出。
 
 ## 3. 先测试已有 P0 30k 权重
 
@@ -212,6 +223,7 @@ export HOST=127.0.0.1
 export PORT=5694
 export GIT_PYTHON_REFRESH=quiet
 export CALVIN_ALLOW_OFFLINE_GIT_METADATA=1
+export CALVIN_FORCE_NO_EGL=1
 export NUM_SEQUENCES=3
 export UNNORM_KEY=franka
 export RUN_ID=p0_30k_d_env_eval3
@@ -242,6 +254,20 @@ EVAL_PORT: policy server 推理评测端口。
 
 Server-1 同时跑 P0 和 P4，必须给两条训练路线不同的 `MAIN_PROCESS_PORT`。否则会出现 `EADDRINUSE: address already in use`。
 
+当前 P4 使用 `p4_pi` 名称；所有路线都强制 9B：
+
+```bash
+export H200_QWEN35_9B="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-9B"
+export BASE_VLM="${H200_QWEN35_9B}"
+```
+
+如果上一次 eval 失败后 5694/5695 仍被旧 policy server 占用，新的脚本会在加载模型前直接报错。重新测试时优先换一组干净端口：
+
+```bash
+export P0_EVAL_PORT=5794
+export P4_EVAL_PORT=5795
+```
+
 ### Server-1 快速测试 P0 + P4
 
 ```bash
@@ -265,9 +291,9 @@ export P0_MAIN_PROCESS_PORT=29600
 export P4_GPUS=4,5,6,7
 export P4_NUM_PROCESSES=4
 export P4_MAIN_PROCESS_PORT=29610
-export P4_BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
-export P0_EVAL_PORT=5694
-export P4_EVAL_PORT=5695
+export P4_BASE_VLM="${H200_QWEN35_9B}"
+export P0_EVAL_PORT=5794
+export P4_EVAL_PORT=5795
 export P0_EVAL_GPU=0
 export P4_EVAL_GPU=4
 
@@ -397,9 +423,9 @@ export P0_MAIN_PROCESS_PORT=29600
 export P4_GPUS=4,5,6,7
 export P4_NUM_PROCESSES=4
 export P4_MAIN_PROCESS_PORT=29610
-export P4_BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
-export P0_EVAL_PORT=5694
-export P4_EVAL_PORT=5695
+export P4_BASE_VLM="${H200_QWEN35_9B}"
+export P0_EVAL_PORT=5794
+export P4_EVAL_PORT=5795
 export P0_EVAL_GPU=0
 export P4_EVAL_GPU=4
 
@@ -472,7 +498,7 @@ tail -f logs/h200_fastexplore/terminal/*p0_oft_pipeline.log
 tail -f logs/h200_fastexplore/terminal/*p1_adapter_pipeline.log
 tail -f logs/h200_fastexplore/terminal/*p2_lora_oft_pipeline.log
 tail -f logs/h200_fastexplore/terminal/*p3_lora_adapter_pipeline.log
-tail -f logs/h200_fastexplore/terminal/*p4_qwen4b_pi_pipeline.log
+tail -f logs/h200_fastexplore/terminal/*p4_pi_pipeline.log
 ```
 
 ## 7. 一键比较

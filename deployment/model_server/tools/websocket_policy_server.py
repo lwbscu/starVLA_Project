@@ -47,6 +47,7 @@ class WebsocketPolicyServer:
             compression=None,
             max_size=None,
         ) as server:
+            logging.info("server listening on %s:%s", self._host, self._port)
             if self._idle_timeout > 0:
                 await self._idle_watchdog(server)
             else:

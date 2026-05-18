@@ -22,7 +22,7 @@ CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
-BASE_VLM=${BASE_VLM:-./playground/Pretrained_models/Qwen3.5-0.8B}
+BASE_VLM=${BASE_VLM:-./playground/Pretrained_models/Qwen3.5-9B}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE:-"[112,112]"}
 ACTION_DIM=${ACTION_DIM:-7}
@@ -177,7 +177,7 @@ case "${ROUTE}" in
       --trainer.lora.dropout "${LORA_DROPOUT}"
     )
     ;;
-  p4_qwen4b_pi|p4_pi)
+  p4_pi)
     ROUTE_ARGS=(
       --framework.name QwenPI
       --framework.action_model.action_model_type LayerwiseFM
@@ -191,7 +191,7 @@ case "${ROUTE}" in
     )
     ;;
   *)
-    echo "Unknown ROUTE=${ROUTE}. Use p0_oft, p1_adapter, p2_lora_oft, p3_lora_adapter, or p4_qwen4b_pi." >&2
+    echo "Unknown ROUTE=${ROUTE}. Use p0_oft, p1_adapter, p2_lora_oft, p3_lora_adapter, or p4_pi." >&2
     exit 2
     ;;
 esac

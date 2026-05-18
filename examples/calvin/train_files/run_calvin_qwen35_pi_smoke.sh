@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CALVIN smoke train: Qwen3.5-VL + QwenPI (LayerwiseFM action head).
 # Mirror of run_calvin_qwen35_oft_smoke.sh; framework fields match
-# run_route_validation_train.sh ROUTE=p4_qwen4b_pi / QwenPIDefaultConfig.
+# run_route_validation_train.sh ROUTE=p4_pi / QwenPIDefaultConfig.
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."

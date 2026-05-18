@@ -94,7 +94,6 @@ from examples.LIBERO.eval_files.model2libero_interface import ModelClient
 
 # Set OpenGL platform for headless rendering
 os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 os.environ["MUJOCO_GL"] = "osmesa"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -114,6 +113,10 @@ def _write_debug_mp4(img_queue, eval_log_dir: str, sequence_i: int, subtask_i: i
         for frame in img_queue:
             writer.append_data(np.asarray(frame, dtype=np.uint8))
     return video_path
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclasses.dataclass
@@ -252,10 +255,9 @@ def make_env(dataset_path: str):
     val_folder = _resolve_calvin_env_folder(dataset_path)
 
     # Load config and disable tactile sensor to avoid pyrender/OpenGL conflicts
-    from omegaconf import OmegaConf
-
     config_path = val_folder / ".hydra" / "merged_config.yaml"
     cfg = OmegaConf.load(config_path)
+    force_no_egl = _env_flag("CALVIN_FORCE_NO_EGL", "1")
 
     # Remove tactile sensor from camera list if it exists
     if hasattr(cfg.env, "cameras") and "tactile" in cfg.env.cameras:
@@ -263,10 +265,30 @@ def make_env(dataset_path: str):
         new_cameras = OmegaConf.create({k: v for k, v in cfg.env.cameras.items() if k != "tactile"})
         cfg.env.cameras = new_cameras
 
+    if force_no_egl:
+        updated_paths = []
+        for cfg_path in ("env.use_egl", "env.env_cfg.use_egl", "env.renderer.use_egl", "env.simulator.use_egl"):
+            if OmegaConf.select(cfg, cfg_path) is not None:
+                OmegaConf.update(cfg, cfg_path, False, merge=True)
+                updated_paths.append(cfg_path)
+        logger.warning(
+            "CALVIN_FORCE_NO_EGL=1: forcing CALVIN env use_egl=False for offline/headless eval. "
+            "updated_config_paths=%s",
+            updated_paths or ["instantiate_kwarg:use_egl"],
+        )
+
     # Initialize environment with modified config
     import hydra
 
-    env = hydra.utils.instantiate(cfg.env, show_gui=False, use_vr=False, use_scene_info=True)
+    instantiate_kwargs = {
+        "show_gui": False,
+        "use_vr": False,
+        "use_scene_info": True,
+    }
+    if force_no_egl:
+        instantiate_kwargs["use_egl"] = False
+
+    env = hydra.utils.instantiate(cfg.env, **instantiate_kwargs)
 
     return env
 
