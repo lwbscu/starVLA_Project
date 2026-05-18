@@ -282,8 +282,7 @@ def _instantiate_calvin_env_direct(cfg, instantiate_kwargs: dict):
     if not target_path:
         raise ValueError("CALVIN env config is missing env._target_")
 
-    env_config = OmegaConf.to_container(cfg.env, resolve=True)
-    env_kwargs = {key: env_config[key] for key in env_config.keys() if key not in {"_target_", "_recursive_"}}
+    env_kwargs = {key: cfg.env[key] for key in cfg.env.keys() if key not in {"_target_", "_recursive_"}}
     env_kwargs.update(instantiate_kwargs)
     target_cls = hydra.utils.get_class(str(target_path))
     try:
