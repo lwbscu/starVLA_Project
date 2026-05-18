@@ -13,7 +13,17 @@ conda activate "${STARVLA_ENV}"
 
 ACTIVE_STAR_VLA_PYTHON="$(python -c 'import sys; print(sys.executable)')"
 export ACTIVE_STAR_VLA_PYTHON
-export STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"${ACTIVE_STAR_VLA_PYTHON}"}
+if [[ -n "${STAR_VLA_PYTHON:-}" && "${STAR_VLA_PYTHON}" != "${ACTIVE_STAR_VLA_PYTHON}" ]]; then
+  if [[ "${ALLOW_STAR_VLA_PYTHON_OVERRIDE:-0}" == "1" ]]; then
+    echo "ALLOW_STAR_VLA_PYTHON_OVERRIDE=1: using STAR_VLA_PYTHON=${STAR_VLA_PYTHON}" >&2
+  else
+    echo "Ignoring stale STAR_VLA_PYTHON=${STAR_VLA_PYTHON}; using active ${STARVLA_ENV} python=${ACTIVE_STAR_VLA_PYTHON}" >&2
+    STAR_VLA_PYTHON="${ACTIVE_STAR_VLA_PYTHON}"
+  fi
+else
+  STAR_VLA_PYTHON="${ACTIVE_STAR_VLA_PYTHON}"
+fi
+export STAR_VLA_PYTHON
 export H200_CALVIN_DATA_ROOT=${H200_CALVIN_DATA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}
 export H200_CALVIN_DATA_NAME=${H200_CALVIN_DATA_NAME:-calvin_task_ABC_D}
 export H200_CALVIN_DATA_MIX=${H200_CALVIN_DATA_MIX:-calvin_abc_d_h200}
