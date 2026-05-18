@@ -285,6 +285,7 @@ export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
 export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
+unset STAR_VLA_PYTHON
 
 export LOG_ROOT=logs/h200_fastexplore_test
 export SMOKE_STEPS=20

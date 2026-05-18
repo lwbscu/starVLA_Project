@@ -11,7 +11,9 @@ export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
 
-export STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(python -c 'import sys; print(sys.executable)')"}
+ACTIVE_STAR_VLA_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+export ACTIVE_STAR_VLA_PYTHON
+export STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"${ACTIVE_STAR_VLA_PYTHON}"}
 export H200_CALVIN_DATA_ROOT=${H200_CALVIN_DATA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}
 export H200_CALVIN_DATA_NAME=${H200_CALVIN_DATA_NAME:-calvin_task_ABC_D}
 export H200_CALVIN_DATA_MIX=${H200_CALVIN_DATA_MIX:-calvin_abc_d_h200}
@@ -183,10 +185,29 @@ PY
   fi
 fi
 
-"${STAR_VLA_PYTHON}" - <<'PY'
-from transformers import Qwen3_5ForConditionalGeneration
+if ! "${STAR_VLA_PYTHON}" - <<'PY'
+import sys
+
+try:
+    import transformers
+    from transformers import Qwen3_5ForConditionalGeneration
+except ImportError as exc:
+    print(
+        f"STAR_VLA_PYTHON={sys.executable} cannot import Qwen3.5/transformers: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+
+print(f"transformers={transformers.__version__}")
 print("Qwen3.5 import OK")
 PY
+then
+  echo "STAR_VLA_PYTHON is not a valid ${STARVLA_ENV} training Python." >&2
+  echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}" >&2
+  echo "ACTIVE_${STARVLA_ENV}_PYTHON=${ACTIVE_STAR_VLA_PYTHON}" >&2
+  echo "Unset stale STAR_VLA_PYTHON or export STAR_VLA_PYTHON=${ACTIVE_STAR_VLA_PYTHON}" >&2
+  exit 2
+fi
 
 PIPELINE_TS=${PIPELINE_TS:-$(date +"%Y%m%d_%H%M%S")}
 PIPELINE_LOG="${LOG_ROOT}/terminal/${PIPELINE_TS}_${ROUTE}_pipeline.log"
@@ -199,6 +220,8 @@ echo "NUM_PROCESSES=${NUM_PROCESSES}"
 echo "MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT}"
 echo "H200_QWEN35_9B=${H200_QWEN35_9B}"
 echo "BASE_VLM=${BASE_VLM}"
+echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
+echo "ACTIVE_STAR_VLA_PYTHON=${ACTIVE_STAR_VLA_PYTHON}"
 echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
 echo "LOG_ROOT=${LOG_ROOT}"
 echo "EVAL_ENABLED=${EVAL_ENABLED}"
