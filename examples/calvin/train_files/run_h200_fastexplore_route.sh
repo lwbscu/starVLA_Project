@@ -11,7 +11,19 @@ export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
 
-ACTIVE_STAR_VLA_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+EXPECTED_STAR_VLA_PYTHON="${CONDA_ROOT}/envs/${STARVLA_ENV}/bin/python"
+if [[ ! -x "${EXPECTED_STAR_VLA_PYTHON}" ]]; then
+  echo "Expected ${STARVLA_ENV} python is not executable: ${EXPECTED_STAR_VLA_PYTHON}" >&2
+  echo "CONDA_ROOT=${CONDA_ROOT}" >&2
+  exit 2
+fi
+CONDA_ACTIVE_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+if [[ "${CONDA_ACTIVE_PYTHON}" != "${EXPECTED_STAR_VLA_PYTHON}" ]]; then
+  echo "conda activate ${STARVLA_ENV} left python at ${CONDA_ACTIVE_PYTHON}; using explicit env python ${EXPECTED_STAR_VLA_PYTHON}" >&2
+fi
+ACTIVE_STAR_VLA_PYTHON="${EXPECTED_STAR_VLA_PYTHON}"
+export EXPECTED_STAR_VLA_PYTHON
+export CONDA_ACTIVE_PYTHON
 export ACTIVE_STAR_VLA_PYTHON
 if [[ -n "${STAR_VLA_PYTHON:-}" && "${STAR_VLA_PYTHON}" != "${ACTIVE_STAR_VLA_PYTHON}" ]]; then
   if [[ "${ALLOW_STAR_VLA_PYTHON_OVERRIDE:-0}" == "1" ]]; then
@@ -232,6 +244,7 @@ echo "H200_QWEN35_9B=${H200_QWEN35_9B}"
 echo "BASE_VLM=${BASE_VLM}"
 echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
 echo "ACTIVE_STAR_VLA_PYTHON=${ACTIVE_STAR_VLA_PYTHON}"
+echo "CONDA_ACTIVE_PYTHON=${CONDA_ACTIVE_PYTHON}"
 echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
 echo "LOG_ROOT=${LOG_ROOT}"
 echo "EVAL_ENABLED=${EVAL_ENABLED}"

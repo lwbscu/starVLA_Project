@@ -286,7 +286,8 @@ export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
 unset STAR_VLA_PYTHON
-python -c "import sys, transformers; print(sys.executable); print(transformers.__version__)"
+export STAR_VLA_PYTHON="${CONDA_ROOT}/envs/${STARVLA_ENV}/bin/python"
+"${STAR_VLA_PYTHON}" -c "import sys, transformers; print(sys.executable); print(transformers.__version__)"
 
 export LOG_ROOT=logs/h200_fastexplore_test
 export SMOKE_STEPS=20
