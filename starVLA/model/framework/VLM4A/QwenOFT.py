@@ -166,6 +166,10 @@ class Qwenvl_OFT(baseframework):
             [example["state"] for example in examples] if "state" in examples[0] else None
         )  # List[ndarray (1, state_dim)] or None
 
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if train_obs_image_size:
+            batch_images = resize_images(batch_images, target_size=tuple(train_obs_image_size))
+
         # Optionally prepend discretised proprioceptive state tokens to each instruction (π₀.5 style).
         instructions = (
             self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions

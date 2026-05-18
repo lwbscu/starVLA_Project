@@ -625,6 +625,11 @@ class LeRobotSingleDataset(Dataset):
         self.curr_traj_id = None
 
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
+        if self.data_cfg and self.data_cfg.get("require_existing_parquet", False) not in ["False", "false", False, 0, "0", None]:
+            self._trajectory_ids, self._trajectory_lengths = self._filter_existing_parquet_trajectories(
+                self._trajectory_ids,
+                self._trajectory_lengths,
+            )
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
         self._all_steps = self._get_all_steps()
@@ -981,7 +986,12 @@ class LeRobotSingleDataset(Dataset):
             try:
                 with open(steps_path, "rb") as f:
                     cached_data = pickle.load(f)
-                return cached_data["steps"]
+                if cached_data.get("config_key") == config_key:
+                    return cached_data["steps"]
+                print(
+                    f"[RANK {os.environ.get('RANK', 'NA')}] "
+                    f"Cached steps config changed; rebuilding {steps_path}."
+                )
             except Exception as e:
                 # include EOFError / PickleError / KeyError
                 print(
@@ -1026,10 +1036,49 @@ class LeRobotSingleDataset(Dataset):
         config_dict = {
             "delete_pause_frame": self.delete_pause_frame,
             "dataset_name": self.dataset_name,
+            "require_existing_parquet": (
+                self.data_cfg.get("require_existing_parquet", False)
+                if self.data_cfg is not None
+                else False
+            ),
+            "num_trajectories": len(self.trajectory_ids),
         }
         # Create a hash of the configuration
         config_str = str(sorted(config_dict.items()))
         return hashlib.md5(config_str.encode()).hexdigest()[:12]  #
+
+    def _filter_existing_parquet_trajectories(
+        self,
+        trajectory_ids: np.ndarray,
+        trajectory_lengths: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Keep only trajectories whose parquet file exists on disk."""
+        keep_ids = []
+        keep_lengths = []
+        missing = 0
+        for trajectory_id, trajectory_length in zip(trajectory_ids, trajectory_lengths):
+            chunk_index = self.get_episode_chunk(int(trajectory_id))
+            parquet_path = self.dataset_path / self.data_path_pattern.format(
+                episode_chunk=chunk_index,
+                episode_index=int(trajectory_id),
+            )
+            if parquet_path.exists():
+                keep_ids.append(trajectory_id)
+                keep_lengths.append(trajectory_length)
+            else:
+                missing += 1
+
+        if not keep_ids:
+            raise RuntimeError(
+                f"`require_existing_parquet` removed all trajectories for {self.dataset_path}. "
+                "Check the LeRobot data download."
+            )
+
+        print(
+            f"Filtered trajectories by existing parquet: kept {len(keep_ids)} / "
+            f"{len(trajectory_ids)}, missing {missing}"
+        )
+        return np.asarray(keep_ids), np.asarray(keep_lengths)
 
 
     def _get_all_steps_single_process(self) -> list[tuple[int, int]]:

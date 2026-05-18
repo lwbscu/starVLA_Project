@@ -221,6 +221,23 @@ MUJOCO_LOG.TXT
 examples/MultiRobot/*
 
 AGENTS.md
+codex日志.md
+
+# Local-only CALVIN / StarVLA reproduction artifacts
+logs/
+logs/**
+playground/
+playground/**
+starVLA.egg-info/
+*.egg-info/
+*.pt
+*.safetensors
+*.mp4
+*.gif
+*.npy
+*.parquet
+*.jsonl.tmp
+*.tmp
 
 temp
 temp/*

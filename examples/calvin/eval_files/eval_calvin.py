@@ -20,11 +20,13 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import hydra
+import imageio.v2 as imageio
 import numpy as np
 import tyro
 
@@ -38,7 +40,6 @@ from calvin_agent.evaluation.utils import (
     get_log_dir,
     print_and_save,
 )
-from moviepy.editor import ImageSequenceClip
 from omegaconf import OmegaConf
 from termcolor import colored
 from tqdm import tqdm
@@ -58,6 +59,20 @@ logger = logging.getLogger(__name__)
 EP_LEN = 360  # Max steps per task
 
 
+def _safe_filename(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")[:120]
+
+
+def _write_debug_mp4(img_queue, eval_log_dir: str, sequence_i: int, subtask_i: int, subtask: str, status: str) -> str:
+    os.makedirs(eval_log_dir, exist_ok=True)
+    video_name = f"{sequence_i}-{subtask_i}-{_safe_filename(subtask)}-{status}.mp4"
+    video_path = os.path.join(eval_log_dir, video_name)
+    with imageio.get_writer(video_path, fps=30, codec="libx264", macro_block_size=None) as writer:
+        for frame in img_queue:
+            writer.append_data(np.asarray(frame, dtype=np.uint8))
+    return video_path
+
+
 @dataclasses.dataclass
 class Args:
     #################################################################################################################
@@ -68,14 +83,14 @@ class Args:
     resize_size: int = 224
     replan_steps: int = 5
     pretrained_path: str = ""
-    unnorm_key: str = ""
+    unnorm_key: str = "franka"
 
     #################################################################################################################
     # Calvin environment-specific parameters
     #################################################################################################################
-    dataset_path: str = "/path/to/calvin/task_D_D"  # Path to Calvin dataset
-    calvin_config_path: str = "/path/to/calvin/calvin_models/conf"
-    eval_sequences_path: str = "/path/to/calvin/eval_sequences.json"
+    dataset_path: str = "/home/lwb/Projects/SII/starVLA_Projects/calvin/dataset/calvin_debug_dataset"
+    calvin_config_path: str = "/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf"
+    eval_sequences_path: str = "examples/calvin/eval_files/eval_sequences.json"
     num_sequences: int = 1000  # Number of evaluation sequences
     num_workers: int = 1  # For future multi-process support
     seed: int = 0
@@ -103,11 +118,11 @@ class CalvinPolicyClient:
         unnorm_key: str = "",
     ):
         self.client = ModelClient(
-            policy_ckpt_path=pretrained_path,
             host=host,
             port=port,
-            image_size=[resize_size, resize_size],
             unnorm_key=(unnorm_key or None),
+            policy_setup="calvin",
+            action_ensemble=False,
         )
         self.resize_size = resize_size
         self.replan_steps = replan_steps
@@ -233,6 +248,9 @@ def evaluate_policy_ddp(
     eval_log_dir = get_log_dir(eval_log_dir)
     with open(eval_sequences_path, "r") as f:
         eval_sequences = json.load(f)
+    if num_sequences is not None and int(num_sequences) > 0:
+        eval_sequences = eval_sequences[: int(num_sequences)]
+    selected_eval_sequences = list(eval_sequences)
     # device_num = int(torch.distributed.get_world_size())
     # device_id = torch.distributed.get_rank()
     # assert num_sequences % device_num == 0
@@ -244,7 +262,9 @@ def evaluate_policy_ddp(
     base_sequence_i = 0  # device_id * interval_len
 
     if not debug:
-        eval_sequences = tqdm(eval_sequences, position=0, leave=True)
+        eval_sequences = tqdm(selected_eval_sequences, position=0, leave=True)
+    else:
+        eval_sequences = selected_eval_sequences
 
     for initial_state, eval_sequence in eval_sequences:
         result = evaluate_sequence(
@@ -268,21 +288,10 @@ def evaluate_policy_ddp(
             )
         local_sequence_i += 1
 
-    def merge_multi_list(res):
-        tmp = []
-        for l in res:
-            tmp.extend(l)
-        return tmp
-
-    def extract_iter_from_tqdm(tqdm_iter):
-        return [_ for _ in tqdm_iter]
-
     # if create_plan_tsne:
     #     create_tsne(plans, eval_log_dir, epoch)
 
-    eval_sequences = extract_iter_from_tqdm(eval_sequences)
-
-    print_and_save(results, eval_sequences, eval_log_dir, epoch)
+    print_and_save(results, selected_eval_sequences, eval_log_dir, epoch)
 
     return results
 
@@ -412,13 +421,11 @@ def rollout(
         if len(current_task_info) > 0:
             if debug:
                 print(colored("success", "green"), end=" ")
-                img_clip = ImageSequenceClip(img_queue, fps=30)
-                img_clip.write_gif(os.path.join(eval_log_dir, f"{sequence_i}-{subtask_i}-{subtask}-succ.gif"), fps=30)
+                _write_debug_mp4(img_queue, eval_log_dir, sequence_i, subtask_i, subtask, "succ")
             return True
     if debug:
         print(colored("fail", "red"), end=" ")
-        img_clip = ImageSequenceClip(img_queue, fps=30)
-        img_clip.write_gif(os.path.join(eval_log_dir, f"{sequence_i}-{subtask_i}-{subtask}-fail.gif"), fps=30)
+        _write_debug_mp4(img_queue, eval_log_dir, sequence_i, subtask_i, subtask, "fail")
     return False
 
 
