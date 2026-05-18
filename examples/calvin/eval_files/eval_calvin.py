@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -49,6 +50,8 @@ def _patch_gitpython_for_offline_metadata() -> None:
     original_repo = git.Repo
 
     class _OfflineRepo:
+        working_tree_dir = None
+
         class _Index:
             @staticmethod
             def diff(*_args, **_kwargs):
@@ -63,7 +66,26 @@ def _patch_gitpython_for_offline_metadata() -> None:
         index = _Index()
         head = _Head()
 
+        @staticmethod
+        def is_dirty(*_args, **_kwargs):
+            return False
+
+        @property
+        def untracked_files(self):
+            return []
+
+    def _git_executable_available() -> bool:
+        git_executable = os.environ.get("GIT_PYTHON_GIT_EXECUTABLE")
+        if git_executable:
+            return Path(git_executable).is_file() and os.access(git_executable, os.X_OK)
+        return shutil.which("git") is not None
+
     def _repo_or_offline(*args, **kwargs):
+        if not _git_executable_available():
+            logging.getLogger(__name__).warning(
+                "Git executable unavailable; using offline CALVIN metadata placeholder."
+            )
+            return _OfflineRepo()
         try:
             return original_repo(*args, **kwargs)
         except Exception as exc:
