@@ -6,29 +6,8 @@ cd "$(dirname "$0")/../../.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-osmesa}
 export MUJOCO_GL=${MUJOCO_GL:-osmesa}
-
-resolve_git_executable() {
-  local candidate
-
-  if [[ -n "${GIT_PYTHON_GIT_EXECUTABLE:-}" ]]; then
-    if [[ -x "${GIT_PYTHON_GIT_EXECUTABLE}" ]]; then
-      echo "${GIT_PYTHON_GIT_EXECUTABLE}"
-      return 0
-    fi
-    echo "GIT_PYTHON_GIT_EXECUTABLE is set but not executable: ${GIT_PYTHON_GIT_EXECUTABLE}" >&2
-    return 2
-  fi
-
-  for candidate in "$(command -v git 2>/dev/null || true)" /usr/bin/git /bin/git; do
-    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
-      echo "${candidate}"
-      return 0
-    fi
-  done
-
-  echo "No git executable found. Install git or set GIT_PYTHON_GIT_EXECUTABLE=/path/to/git before CALVIN eval." >&2
-  return 2
-}
+export GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH:-quiet}
+export CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA:-1}
 
 RUN_ID=${RUN_ID:-calvin_eval_debug}
 RUN_TS=${RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
@@ -42,8 +21,6 @@ CKPT_PATH=${CKPT_PATH:-}
 DATASET_PATH=${DATASET_PATH:-/home/lwb/Projects/SII/starVLA_Projects/calvin/dataset/calvin_debug_dataset}
 CALVIN_CONFIG_PATH=${CALVIN_CONFIG_PATH:-/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf}
 EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
-GIT_PYTHON_GIT_EXECUTABLE=$(resolve_git_executable)
-export GIT_PYTHON_GIT_EXECUTABLE
 
 mkdir -p "${LOG_DIR}"/{train,eval,terminal,mp4,configs,metrics,checkpoints}
 cp "$0" "${LOG_DIR}/configs/"
@@ -54,13 +31,20 @@ cp "$0" "${LOG_DIR}/configs/"
   echo "NUM_SEQUENCES=${NUM_SEQUENCES}"
   echo "HOST=${HOST}"
   echo "PORT=${PORT}"
-  echo "GIT_PYTHON_GIT_EXECUTABLE=${GIT_PYTHON_GIT_EXECUTABLE}"
+  echo "GIT_PYTHON_REFRESH=${GIT_PYTHON_REFRESH}"
+  echo "CALVIN_ALLOW_OFFLINE_GIT_METADATA=${CALVIN_ALLOW_OFFLINE_GIT_METADATA}"
+  echo "GIT_PYTHON_GIT_EXECUTABLE=${GIT_PYTHON_GIT_EXECUTABLE:-<unset>}"
 
   "${CALVIN_PYTHON}" - <<'PY'
 import os
 import git
 
-print(f"GitPython import OK, git={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE')}")
+print(
+    "GitPython import OK, "
+    f"refresh={os.environ.get('GIT_PYTHON_REFRESH')}, "
+    f"offline_metadata={os.environ.get('CALVIN_ALLOW_OFFLINE_GIT_METADATA')}, "
+    f"git={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE', '<unset>')}"
+)
 PY
 
   "${CALVIN_PYTHON}" examples/calvin/eval_files/eval_calvin.py \

@@ -30,6 +30,49 @@ import imageio.v2 as imageio
 import numpy as np
 import tyro
 
+os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
+os.environ.setdefault("CALVIN_ALLOW_OFFLINE_GIT_METADATA", "1")
+
+
+def _patch_gitpython_for_offline_metadata() -> None:
+    """Let offline CALVIN eval skip git commit metadata while preserving real eval failures."""
+    if os.environ.get("CALVIN_ALLOW_OFFLINE_GIT_METADATA") != "1":
+        return
+
+    try:
+        import git
+    except ImportError:
+        return
+
+    original_repo = git.Repo
+
+    class _OfflineRepo:
+        class _Index:
+            @staticmethod
+            def diff(*_args, **_kwargs):
+                return []
+
+        class _Head:
+            class _Object:
+                hexsha = "git-unavailable-offline"
+
+            object = _Object()
+
+        index = _Index()
+        head = _Head()
+
+    def _repo_or_offline(*args, **kwargs):
+        try:
+            return original_repo(*args, **kwargs)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Git metadata unavailable during offline CALVIN eval: %s", exc)
+            return _OfflineRepo()
+
+    git.Repo = _repo_or_offline
+
+
+_patch_gitpython_for_offline_metadata()
+
 # # Add Calvin to path
 # CALVIN_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "calvin"
 # sys.path.insert(0, str(CALVIN_ROOT))
