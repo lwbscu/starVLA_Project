@@ -70,6 +70,7 @@ export BASE_VLM="${H200_QWEN35_9B}"
 export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
 export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
 export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
+export CALVIN_ASSET_ROOT="${PROJECT_ROOT}/calvin/calvin_env/data"
 export GIT_PYTHON_REFRESH=quiet
 export CALVIN_ALLOW_OFFLINE_GIT_METADATA=1
 export CALVIN_FORCE_NO_EGL=1
