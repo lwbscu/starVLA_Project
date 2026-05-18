@@ -14,17 +14,33 @@
 默认训练脚本是“多路线并行，每条路线绑定一张 GPU”。
 `GPU_LIST` 的顺序必须和 `ROUTE_LIST` 一一对应，例如 `ROUTE_LIST="p0_oft p1_adapter"` 配 `GPU_LIST="2 5"` 表示 P0 跑 GPU2、P1 跑 GPU5。
 
+每个新终端都先执行第 2 节公共环境，再执行后面的训练、server 或 eval 命令。
+
 ## 2. H200 公共环境
 
+先复制执行这一段。它按你当前服务器路径设置项目根目录和 conda 根目录：
+
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
+export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
+export STARVLA_ENV=starVLA
+export CALVIN_ENV=calvin
+
+test -d "${PROJECT_ROOT}"
+test -f "${CONDA_ROOT}/etc/profile.d/conda.sh"
+
+export PATH="${CONDA_ROOT}/bin:${PATH}"
+source "${CONDA_ROOT}/etc/profile.d/conda.sh"
+
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 export WANDB_MODE=disabled
 export NO_ALBUMENTATIONS_UPDATE=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export STAR_VLA_PYTHON="$(conda info --base)/envs/starVLA_qwen35/bin/python"
+export STAR_VLA_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
 export H200_CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
 export H200_CALVIN_DATA_NAME=calvin_task_ABC_D
 export H200_CALVIN_DATA_MIX=calvin_abc_d_h200
@@ -36,13 +52,19 @@ export H200_CALVIN_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAM
 ```bash
 nvidia-smi
 df -h
-git branch --show-current
-git log -1 --oneline --decorate
-git status --short
+
+if command -v git >/dev/null 2>&1; then
+  git branch --show-current
+  git log -1 --oneline --decorate
+  git status --short
+else
+  echo "git not found in PATH, skip git checks"
+fi
 
 "${STAR_VLA_PYTHON}" -c "import torch, transformers; print(torch.__version__, transformers.__version__, torch.cuda.is_available())"
 "${STAR_VLA_PYTHON}" -c "from transformers import Qwen3_5ForConditionalGeneration; print('Qwen3.5 import OK')"
 test -f playground/Pretrained_models/Qwen3.5-0.8B/config.json
+test -d "${PROJECT_ROOT}/calvin/calvin_models/conf"
 test -d "${H200_CALVIN_DATASET_PATH}"
 test -f "${H200_CALVIN_DATASET_PATH}/meta/info.json"
 test -f "${H200_CALVIN_DATASET_PATH}/meta/modality.json"
@@ -78,8 +100,8 @@ PY
 指定 GPU0/1/2/3 分别跑 P0/P1/P2/P3：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
@@ -111,8 +133,8 @@ find logs/h200_route_train -path "*/checkpoints/*/checkpoints/steps_100_pytorch_
 指定 GPU0/1/2/3：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
@@ -135,8 +157,8 @@ bash examples/calvin/train_files/run_route_h200_matrix.sh
 指定 GPU0/1/2/3：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
@@ -157,8 +179,8 @@ bash examples/calvin/train_files/run_route_h200_matrix.sh
 ### 3.4 后台运行
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 LOG_ROOT="logs/h200_route_train/log_${H200_RUN_TS}_qwen35_0p8b_4route_30k"
@@ -199,8 +221,8 @@ nvidia-smi
 ### 4.1 P0：QwenOFT
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 RUN_TS=$(date +"%Y%m%d_%H%M%S")
 ROUTE=p0_oft
@@ -226,8 +248,8 @@ bash examples/calvin/train_files/run_route_validation_train.sh
 ### 4.2 P1：QwenAdapter
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 RUN_TS=$(date +"%Y%m%d_%H%M%S")
 ROUTE=p1_adapter
@@ -253,8 +275,8 @@ bash examples/calvin/train_files/run_route_validation_train.sh
 ### 4.3 P2：LoRA + QwenOFT
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 RUN_TS=$(date +"%Y%m%d_%H%M%S")
 ROUTE=p2_lora_oft
@@ -282,8 +304,8 @@ P2 先跑 100 step 严格验证 LoRA 注入、checkpoint 保存、reload 和 pol
 ### 4.4 P3：LoRA + QwenAdapter
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
 
 RUN_TS=$(date +"%Y%m%d_%H%M%S")
 ROUTE=p3_lora_adapter
@@ -396,15 +418,15 @@ OUT_JSON=<log_dir>/metrics/reload_check_manual.json
 给每个待评测 checkpoint 分配一个空闲端口和一张 GPU。示例使用 GPU4、端口 5694：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate starVLA_qwen35
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+export STAR_VLA_PYTHON="$(python -c 'import sys; print(sys.executable)')"
 
 export CKPT_PATH=<checkpoint_pt_path>
 export PORT=5694
 export RUN_ID=h200_eval_server_p0_steps30000
 export LOG_DIR=<route_log_dir>/server_steps30000
 export CUDA_VISIBLE_DEVICES=4
-export STAR_VLA_PYTHON="$(conda info --base)/envs/starVLA_qwen35/bin/python"
 
 bash examples/calvin/eval_files/run_policy_server_debug.sh
 ```
@@ -421,8 +443,9 @@ bash examples/calvin/eval_files/run_policy_server_debug.sh
 另开一个终端，使用 `calvin` 环境跑 eval。示例跑 5 条 debug sequence：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate calvin
+cd "${PROJECT_ROOT}"
+conda activate "${CALVIN_ENV}"
+export CALVIN_PYTHON="$(python -c 'import sys; print(sys.executable)')"
 
 export CKPT_PATH=<checkpoint_pt_path>
 export PORT=5694
@@ -431,7 +454,7 @@ export UNNORM_KEY=franka
 export RUN_ID=h200_eval_debug5_p0_steps30000
 export LOG_DIR=<route_log_dir>/eval_debug5_steps30000
 export DATASET_PATH=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/calvin_task_ABC_D
-export CALVIN_CONFIG_PATH=/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf
+export CALVIN_CONFIG_PATH="${CALVIN_CONFIG_PATH}"
 
 bash examples/calvin/eval_files/eval_calvin_debug.sh
 ```
@@ -456,8 +479,9 @@ rg -n "Average successful sequence length|Success rates|Subtask:" "${LOG_DIR}/te
 完整原始 CALVIN ABC->D validation 数据准备好后，只替换 `DATASET_PATH` 和 `NUM_SEQUENCES`：
 
 ```bash
-cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
-conda activate calvin
+cd "${PROJECT_ROOT}"
+conda activate "${CALVIN_ENV}"
+export CALVIN_PYTHON="$(python -c 'import sys; print(sys.executable)')"
 
 export CKPT_PATH=<checkpoint_pt_path>
 export PORT=5694
@@ -466,7 +490,7 @@ export UNNORM_KEY=franka
 export RUN_ID=h200_eval_abcd_full_<route>_<step>
 export LOG_DIR=<route_log_dir>/eval_abcd_full_<step>
 export DATASET_PATH=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/calvin_task_ABC_D
-export CALVIN_CONFIG_PATH=/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf
+export CALVIN_CONFIG_PATH="${CALVIN_CONFIG_PATH}"
 
 bash examples/calvin/eval_files/eval_calvin_debug.sh
 ```
