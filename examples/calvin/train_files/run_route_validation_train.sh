@@ -32,6 +32,9 @@ ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM:-1024}
 LORA_R=${LORA_R:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS:-4}
+PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS:-2}
+PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS:-32}
 CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-}
 CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-}
 CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-}
@@ -167,8 +170,21 @@ case "${ROUTE}" in
       --trainer.lora.dropout "${LORA_DROPOUT}"
     )
     ;;
+  p4_qwen4b_pi|p4_pi)
+    ROUTE_ARGS=(
+      --framework.name QwenPI
+      --framework.action_model.action_model_type LayerwiseFM
+      --framework.action_model.action_dim "${ACTION_DIM}"
+      --framework.action_model.state_dim "${ACTION_DIM}"
+      --framework.action_model.action_horizon "${ACTION_HORIZON}"
+      --framework.action_model.repeated_diffusion_steps "${PI_REPEATED_DIFFUSION_STEPS}"
+      --framework.action_model.num_inference_timesteps "${PI_NUM_INFERENCE_TIMESTEPS}"
+      --framework.action_model.num_target_vision_tokens "${PI_NUM_TARGET_VISION_TOKENS}"
+      --trainer.freeze_modules qwen_vl_interface
+    )
+    ;;
   *)
-    echo "Unknown ROUTE=${ROUTE}. Use p0_oft, p1_adapter, p2_lora_oft, or p3_lora_adapter." >&2
+    echo "Unknown ROUTE=${ROUTE}. Use p0_oft, p1_adapter, p2_lora_oft, p3_lora_adapter, or p4_qwen4b_pi." >&2
     exit 2
     ;;
 esac
@@ -196,6 +212,9 @@ set +e
   echo "LORA_R=${LORA_R}"
   echo "LORA_ALPHA=${LORA_ALPHA}"
   echo "LORA_DROPOUT=${LORA_DROPOUT}"
+  echo "PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS}"
+  echo "PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS}"
+  echo "PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS}"
   echo "CALVIN_DATA_SOURCE=${CALVIN_DATA_SOURCE}"
   echo "CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-<config_yaml>}"
   echo "CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-<config_yaml>}"
