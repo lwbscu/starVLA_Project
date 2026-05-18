@@ -77,6 +77,7 @@ export SMOKE_EVAL_SEQUENCES=${SMOKE_EVAL_SEQUENCES:-1}
 export FAST_EVAL_SEQUENCES=${FAST_EVAL_SEQUENCES:-3}
 export DECISION_EVAL_SEQUENCES=${DECISION_EVAL_SEQUENCES:-5}
 export POLICY_SERVER_START_TIMEOUT=${POLICY_SERVER_START_TIMEOUT:-600}
+export POLICY_SERVER_STOP_TIMEOUT=${POLICY_SERVER_STOP_TIMEOUT:-10}
 export CALVIN_PYTHON=${CALVIN_PYTHON:-"${CONDA_ROOT}/envs/calvin/bin/python"}
 export CALVIN_CONFIG_PATH=${CALVIN_CONFIG_PATH:-"${PROJECT_ROOT}/calvin/calvin_models/conf"}
 export EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
@@ -323,6 +324,31 @@ wait_for_policy_server() {
   return 1
 }
 
+cleanup_policy_server() {
+  local port=$1
+  local ckpt_path=$2
+  local server_pid=${3:-}
+  local cleanup_status=0
+
+  if [[ -n "${server_pid}" ]]; then
+    kill "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" 2>/dev/null || true
+  fi
+
+  "${STAR_VLA_PYTHON}" examples/calvin/train_files/cleanup_policy_server.py \
+    --port "${port}" \
+    --ckpt-path "${ckpt_path}" \
+    --timeout "${POLICY_SERVER_STOP_TIMEOUT}" || cleanup_status=$?
+
+  if [[ "${cleanup_status}" -ne 0 ]]; then
+    echo "Policy server cleanup failed for port=${port} ckpt=${ckpt_path}" >&2
+    "${STAR_VLA_PYTHON}" examples/calvin/train_files/describe_port_users.py "${port}" >&2 || true
+    return "${cleanup_status}"
+  fi
+
+  ensure_eval_port_free "${port}"
+}
+
 run_eval_stage() {
   local stage_name=$1
   local steps=$2
@@ -334,6 +360,7 @@ run_eval_stage() {
   local server_log="${server_dir}/terminal/policy_server.log"
   local server_pid
   local eval_status
+  local cleanup_status
   local mp4_count
   local result_file
 
@@ -352,8 +379,7 @@ run_eval_stage() {
   server_pid=$!
 
   if ! wait_for_policy_server "${server_pid}" "${server_log}" "${POLICY_SERVER_START_TIMEOUT}"; then
-    kill "${server_pid}" 2>/dev/null || true
-    wait "${server_pid}" 2>/dev/null || true
+    cleanup_policy_server "${EVAL_PORT}" "${ckpt_path}" "${server_pid}" || true
     return 1
   fi
 
@@ -377,9 +403,14 @@ run_eval_stage() {
   GIT_PYTHON_GIT_EXECUTABLE="${GIT_PYTHON_GIT_EXECUTABLE:-}" \
   bash examples/calvin/eval_files/eval_calvin_debug.sh
   eval_status=$?
-  kill "${server_pid}" 2>/dev/null || true
-  wait "${server_pid}" 2>/dev/null || true
+  cleanup_status=0
+  cleanup_policy_server "${EVAL_PORT}" "${ckpt_path}" "${server_pid}" || cleanup_status=$?
   set -e
+
+  if [[ "${cleanup_status}" -ne 0 ]]; then
+    echo "Policy server cleanup failed after eval stage=${stage_name}. See ${server_log}" >&2
+    return "${cleanup_status}"
+  fi
 
   if [[ "${eval_status}" -ne 0 ]]; then
     echo "Eval failed for stage=${stage_name}. See ${eval_dir}/terminal/eval.log" >&2

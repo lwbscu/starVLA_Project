@@ -262,7 +262,7 @@ export H200_QWEN35_9B="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-9B"
 export BASE_VLM="${H200_QWEN35_9B}"
 ```
 
-如果上一次 eval 失败后端口仍被旧 policy server 或旧 accelerate 进程占用，脚本会直接报错并打印占用 PID/命令。重新测试时优先换一组干净端口：
+如果上一次 eval 失败后端口仍被旧 policy server 或旧 accelerate 进程占用，脚本会直接报错并打印占用 PID/命令。新版快速脚本会在每个 eval stage 后按 `EVAL_PORT` 和 `ckpt_path` 精确停止本次 policy server；如果训练机还没同步这版脚本，重新测试前先手动清理或换一组干净端口：
 
 ```bash
 export P0_MAIN_PROCESS_PORT=30600
@@ -275,6 +275,13 @@ export P4_EVAL_PORT=6095
 
 ```bash
 "${STAR_VLA_PYTHON}" examples/calvin/train_files/describe_port_users.py 29600 29610 5894 5895 6094 6095
+```
+
+如果输出确认占用者是 `deployment/model_server/server_policy.py`，优先用脚本按端口精确清理：
+
+```bash
+"${STAR_VLA_PYTHON}" examples/calvin/train_files/cleanup_policy_server.py --port 6094 --timeout 10
+"${STAR_VLA_PYTHON}" examples/calvin/train_files/cleanup_policy_server.py --port 6095 --timeout 10
 ```
 
 ### Server-1 快速测试 P0 + P4
