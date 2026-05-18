@@ -174,9 +174,39 @@ class CalvinPolicyClient:
         return action
 
 
+def _resolve_calvin_env_folder(dataset_path: str) -> Path:
+    """Resolve a CALVIN split folder that contains .hydra/merged_config.yaml.
+
+    Official CALVIN eval usually passes a dataset root with ``validation/``.
+    The H200 shared ABC->D bundle currently exposes D environment config under
+    ``task_D_D/training/`` only, so we also accept that split for smoke eval.
+    """
+    root = Path(dataset_path)
+    candidates = [
+        root / "validation",
+        root / "training",
+        root,
+    ]
+    for candidate in candidates:
+        if (candidate / ".hydra" / "merged_config.yaml").is_file():
+            if candidate.name != "validation":
+                logger.warning(
+                    "Using CALVIN split folder %s for eval. This is suitable for smoke/visual checks, "
+                    "but not an official validation split.",
+                    candidate,
+                )
+            return candidate
+    raise FileNotFoundError(
+        "Could not find CALVIN env config. Expected one of: "
+        f"{root / 'validation' / '.hydra' / 'merged_config.yaml'}, "
+        f"{root / 'training' / '.hydra' / 'merged_config.yaml'}, "
+        f"{root / '.hydra' / 'merged_config.yaml'}"
+    )
+
+
 def make_env(dataset_path: str):
     """Initialize Calvin environment without tactile sensor (to avoid OpenGL issues)."""
-    val_folder = Path(dataset_path) / "validation"
+    val_folder = _resolve_calvin_env_folder(dataset_path)
 
     # Load config and disable tactile sensor to avoid pyrender/OpenGL conflicts
     from omegaconf import OmegaConf

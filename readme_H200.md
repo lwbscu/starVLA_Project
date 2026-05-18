@@ -1,9 +1,23 @@
-# H200 五路线一小时快速探索
+# H200 五路线快速探索与自动评测命令
 
-目标：四台服务器并行跑五条路线，所有日志统一写入：
+目标：用完整 `calvin_task_ABC_D` 训练，用 `task_D_D` 测试。每轮 checkpoint 后自动跑 D 环境可视化评测。所有日志、checkpoint、eval 结果和 mp4 统一写入：
 
 ```text
 logs/h200_fastexplore/
+```
+
+当前服务器数据结论：
+
+```text
+训练数据：calvin_task_ABC_D
+训练范围：全部 17870 episodes / 1071743 frames，不从训练集切 eval 子集
+格式：LeRobot/HF v2.1
+规模：17870 episodes, 1071743 frames, 17870 parquet, 35740 mp4
+
+快速评测环境：task_D_D
+格式：原始 CALVIN npz
+可用配置：task_D_D/training/.hydra/merged_config.yaml
+限制：没有 validation/，所以这是 D 环境 smoke/可视化评估，不是官方 validation 指标。
 ```
 
 五条路线：
@@ -16,13 +30,15 @@ P3: p3_lora_adapter     Qwen3.5 + LoRA + Adapter
 P4: p4_qwen4b_pi        Qwen3.5-4B + PI / Flow-Matching
 ```
 
-节奏：
+默认正式节奏：
 
 ```text
-1k smoke -> 验证评估 + mp4 -> 10k 快评 -> 验证评估 + mp4 -> 30k 决策 -> 验证评估 + mp4
+1k smoke -> D 环境 eval + mp4
+10k 快评 -> D 环境 eval + mp4
+30k 决策 -> D 环境 eval + mp4
 ```
 
-## 0. 每台服务器先执行
+## 1. 每台服务器先执行
 
 ```bash
 export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
@@ -45,8 +61,8 @@ export H200_CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/in
 export H200_CALVIN_DATA_NAME=calvin_task_ABC_D
 export H200_CALVIN_DATA_MIX=calvin_abc_d_h200
 export H200_CALVIN_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
+export H200_CALVIN_EVAL_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/task_D_D"
 
-export H200_CALVIN_EVAL_DATASET_PATH="${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset"
 export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
 export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
 export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
@@ -63,21 +79,24 @@ export FAST_EVAL_SEQUENCES=3
 export DECISION_EVAL_SEQUENCES=5
 ```
 
-## 1. 检查环境和数据
+## 2. 环境和数据检查
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
 
 python -c "from transformers import Qwen3_5ForConditionalGeneration; print('Qwen3.5 import OK')"
-test -d "${H200_CALVIN_DATASET_PATH}"
+
 test -f "${H200_CALVIN_DATASET_PATH}/meta/info.json"
-test -f "${H200_CALVIN_DATASET_PATH}/meta/modality.json" || cp examples/calvin/train_files/modality.json "${H200_CALVIN_DATASET_PATH}/meta/modality.json"
+test -f "${H200_CALVIN_DATASET_PATH}/meta/modality.json"
 test -d "${H200_CALVIN_DATASET_PATH}/data"
-test -d "${H200_CALVIN_EVAL_DATASET_PATH}/validation"
+test -d "${H200_CALVIN_DATASET_PATH}/videos"
+
+test -f "${H200_CALVIN_EVAL_DATASET_PATH}/training/.hydra/merged_config.yaml"
 test -d "${CALVIN_CONFIG_PATH}"
 test -f "${EVAL_SEQUENCES_PATH}"
 test -x "${CALVIN_PYTHON}"
+
 nvidia-smi
 ```
 
@@ -87,15 +106,107 @@ P4 需要 4B 权重：
 test -f playground/Pretrained_models/Qwen3.5-4B/config.json
 ```
 
-## 2. 四台服务器启动命令
+## 3. 先测试已有 P0 30k 权重
 
-### Server-1：同时跑 P0 和 P4
+你之前的 P0 训练已经完成：
 
-P0 默认用 GPU0-3，P4 默认用 GPU4-7。
+```text
+logs/h200_route_train/log_20260518_151413_h200_p0_oft_30000step
+```
+
+先找 checkpoint：
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
+
+find logs/h200_route_train/log_20260518_151413_h200_p0_oft_30000step \
+  -type f \( -name "steps_30000_pytorch_model.pt" -o -name "model.safetensors" -o -name "*.pt" \) | sort
+```
+
+设置 checkpoint。优先使用 `steps_30000_pytorch_model.pt`：
+
+```bash
+export CKPT_PATH=$(find logs/h200_route_train/log_20260518_151413_h200_p0_oft_30000step \
+  -type f -name "steps_30000_pytorch_model.pt" | sort | tail -n 1)
+
+test -f "${CKPT_PATH}"
+echo "${CKPT_PATH}"
+```
+
+先做 checkpoint reload：
+
+```bash
+python examples/calvin/eval_files/check_checkpoint_reload.py \
+  --ckpt-path "${CKPT_PATH}" \
+  --expected-action-chunk-size 8 \
+  --expected-unnorm-key franka \
+  --output-json logs/h200_route_train/p0_30k_reload_check.json
+```
+
+启动 policy server：
+
+```bash
+export PORT=5694
+export CUDA_VISIBLE_DEVICES=0
+export RUN_ID=p0_30k_server
+export LOG_DIR=logs/h200_route_train/p0_30k_server
+
+bash examples/calvin/eval_files/run_policy_server_debug.sh
+```
+
+另开终端跑 D 环境 3 条序列评测并输出 mp4：
+
+```bash
+export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
+export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
+export PATH="${CONDA_ROOT}/bin:${PATH}"
+source "${CONDA_ROOT}/etc/profile.d/conda.sh"
+
+cd "${PROJECT_ROOT}"
+conda activate calvin
+
+export CKPT_PATH=$(find logs/h200_route_train/log_20260518_151413_h200_p0_oft_30000step \
+  -type f -name "steps_30000_pytorch_model.pt" | sort | tail -n 1)
+export HOST=127.0.0.1
+export PORT=5694
+export NUM_SEQUENCES=3
+export UNNORM_KEY=franka
+export RUN_ID=p0_30k_d_env_eval3
+export LOG_DIR=logs/h200_route_train/p0_30k_d_env_eval3
+export DATASET_PATH=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/task_D_D
+export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
+export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
+
+bash examples/calvin/eval_files/eval_calvin_debug.sh
+```
+
+检查输出：
+
+```bash
+find logs/h200_route_train/p0_30k_d_env_eval3 -type f \( -name "results.json" -o -name "*.mp4" \) | sort
+```
+
+## 4. 多路线快速脚本测试
+
+正式跑之前，先用极短步数完整验证链路：训练、保存 checkpoint、reload、启动 server、D 环境 eval、输出 mp4。
+
+### Server-1 快速测试 P0 + P4
+
+```bash
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore_test
+export SMOKE_STEPS=20
+export FAST_STEPS=50
+export DECISION_STEPS=100
+export SMOKE_SAVE_INTERVAL=20
+export FAST_SAVE_INTERVAL=50
+export DECISION_SAVE_INTERVAL=100
+export SMOKE_EVAL_SEQUENCES=1
+export FAST_EVAL_SEQUENCES=1
+export DECISION_EVAL_SEQUENCES=1
 
 export P0_GPUS=0,1,2,3
 export P0_NUM_PROCESSES=4
@@ -110,11 +221,22 @@ export P4_EVAL_GPU=4
 bash examples/calvin/train_files/run_h200_fastexplore_server1.sh
 ```
 
-### Server-2：跑 P1
+### Server-2 快速测试 P1
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore_test
+export SMOKE_STEPS=20
+export FAST_STEPS=50
+export DECISION_STEPS=100
+export SMOKE_SAVE_INTERVAL=20
+export FAST_SAVE_INTERVAL=50
+export DECISION_SAVE_INTERVAL=100
+export SMOKE_EVAL_SEQUENCES=1
+export FAST_EVAL_SEQUENCES=1
+export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
@@ -124,11 +246,22 @@ export EVAL_GPU=0
 bash examples/calvin/train_files/run_h200_fastexplore_server2.sh
 ```
 
-### Server-3：跑 P2
+### Server-3 快速测试 P2
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore_test
+export SMOKE_STEPS=20
+export FAST_STEPS=50
+export DECISION_STEPS=100
+export SMOKE_SAVE_INTERVAL=20
+export FAST_SAVE_INTERVAL=50
+export DECISION_SAVE_INTERVAL=100
+export SMOKE_EVAL_SEQUENCES=1
+export FAST_EVAL_SEQUENCES=1
+export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
@@ -138,11 +271,22 @@ export EVAL_GPU=0
 bash examples/calvin/train_files/run_h200_fastexplore_server3.sh
 ```
 
-### Server-4：跑 P3
+### Server-4 快速测试 P3
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore_test
+export SMOKE_STEPS=20
+export FAST_STEPS=50
+export DECISION_STEPS=100
+export SMOKE_SAVE_INTERVAL=20
+export FAST_SAVE_INTERVAL=50
+export DECISION_SAVE_INTERVAL=100
+export SMOKE_EVAL_SEQUENCES=1
+export FAST_EVAL_SEQUENCES=1
+export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
@@ -152,41 +296,104 @@ export EVAL_GPU=0
 bash examples/calvin/train_files/run_h200_fastexplore_server4.sh
 ```
 
-## 3. 脚本会自动做什么
-
-每条路线自动执行：
-
-```text
-smoke1k:      train 1000 steps, save steps_1000 checkpoint, reload check, eval, mp4
-fast10k:      train 10000 steps, save steps_5000/steps_10000 checkpoint, reload check, eval, mp4
-decision30k:  train 30000 steps, save steps_10000/steps_20000/steps_30000 checkpoint, reload check, eval, mp4
-```
-
-每个阶段的严格顺序：
-
-```text
-训练 -> checkpoint 存在性检查 -> checkpoint reload 检查 -> 启动 policy server -> CALVIN eval -> 检查 results.json -> 检查 mp4
-```
-
-任何一步失败就直接停止该路线，不会伪装成功。
-
-默认 eval 序列数：
-
-```text
-1k:  1 条序列，用于快速看动作方向和是否能出视频
-10k: 3 条序列，用于快评趋势
-30k: 5 条序列，用于一小时决策
-```
-
-如果一小时内还有余量，可以提高：
+### 快速测试结果比较
 
 ```bash
-export SMOKE_EVAL_SEQUENCES=3
-export FAST_EVAL_SEQUENCES=5
-export DECISION_EVAL_SEQUENCES=10
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+LOG_ROOT=logs/h200_fastexplore_test \
+bash examples/calvin/train_files/compare_h200_fastexplore.sh
+
+cat logs/h200_fastexplore_test/summary/compare_routes.md
+find logs/h200_fastexplore_test -type f -name "*.mp4" | sort | head -20
 ```
 
-## 4. 监控
+快速测试必须满足：
+
+```text
+1. 每条路线至少保存 checkpoint。
+2. reload_check passed。
+3. 每条路线至少生成一个 results.json。
+4. 每条路线至少生成一个 mp4。
+```
+
+## 5. 正式一小时五路线探索
+
+确认第 4 节没问题后，重新开干净终端，执行第 1 节公共环境变量，然后不要覆盖 `SMOKE_STEPS/FAST_STEPS/DECISION_STEPS`，使用默认：
+
+```text
+SMOKE_STEPS=1000
+FAST_STEPS=10000
+DECISION_STEPS=30000
+```
+
+### Server-1 正式跑 P0 + P4
+
+```bash
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore
+export P0_GPUS=0,1,2,3
+export P0_NUM_PROCESSES=4
+export P4_GPUS=4,5,6,7
+export P4_NUM_PROCESSES=4
+export P4_BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
+export P0_EVAL_PORT=5694
+export P4_EVAL_PORT=5695
+export P0_EVAL_GPU=0
+export P4_EVAL_GPU=4
+
+bash examples/calvin/train_files/run_h200_fastexplore_server1.sh
+```
+
+### Server-2 正式跑 P1
+
+```bash
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore
+export TRAIN_GPUS=0,1,2,3,4,5,6,7
+export NUM_PROCESSES=8
+export EVAL_PORT=5694
+export EVAL_GPU=0
+
+bash examples/calvin/train_files/run_h200_fastexplore_server2.sh
+```
+
+### Server-3 正式跑 P2
+
+```bash
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore
+export TRAIN_GPUS=0,1,2,3,4,5,6,7
+export NUM_PROCESSES=8
+export EVAL_PORT=5694
+export EVAL_GPU=0
+
+bash examples/calvin/train_files/run_h200_fastexplore_server3.sh
+```
+
+### Server-4 正式跑 P3
+
+```bash
+cd "${PROJECT_ROOT}"
+conda activate "${STARVLA_ENV}"
+
+export LOG_ROOT=logs/h200_fastexplore
+export TRAIN_GPUS=0,1,2,3,4,5,6,7
+export NUM_PROCESSES=8
+export EVAL_PORT=5694
+export EVAL_GPU=0
+
+bash examples/calvin/train_files/run_h200_fastexplore_server4.sh
+```
+
+## 6. 监控
 
 ```bash
 nvidia-smi
@@ -195,132 +402,56 @@ find logs/h200_fastexplore -path "*/metrics/loss_check.json" -print
 find logs/h200_fastexplore -path "*/metrics/reload_check_steps_*.json" -print
 find logs/h200_fastexplore -path "*/checkpoints/*/checkpoints/*.pt" -print
 find logs/h200_fastexplore \( -path "*/eval_*/*.json" -o -path "*/eval_*/*.mp4" \) -print
-find logs/h200_fastexplore -path "*/mp4/*.mp4" -print
 ```
 
-看某条路线：
+看单条路线：
 
 ```bash
 tail -f logs/h200_fastexplore/terminal/*p0_oft_pipeline.log
+tail -f logs/h200_fastexplore/terminal/*p1_adapter_pipeline.log
+tail -f logs/h200_fastexplore/terminal/*p2_lora_oft_pipeline.log
+tail -f logs/h200_fastexplore/terminal/*p3_lora_adapter_pipeline.log
 tail -f logs/h200_fastexplore/terminal/*p4_qwen4b_pi_pipeline.log
 ```
 
-## 5. 一键比较五条路线
-
-在任意一台能看到共享 `logs/h200_fastexplore/` 的服务器执行：
+## 7. 一键比较
 
 ```bash
 cd "${PROJECT_ROOT}"
 conda activate "${STARVLA_ENV}"
 
 bash examples/calvin/train_files/compare_h200_fastexplore.sh
-```
-
-输出：
-
-```text
-logs/h200_fastexplore/summary/compare_routes.md
-logs/h200_fastexplore/summary/compare_routes.csv
-```
-
-查看：
-
-```bash
 cat logs/h200_fastexplore/summary/compare_routes.md
 ```
 
-## 6. 比较标准
-
-优先级：
+重点看：
 
 ```text
-1. 首先看 eval_avg_seq_len。
-2. 同时打开 mp4 看运动效果：是否能接近目标、夹爪方向是否正确、是否动作爆炸。
-3. 再看是否完成 decision30k。
-4. 同阶段比较 loss_check 是否 passed。
-5. 同阶段比较 checkpoint reload 是否 passed。
-6. loss 接近时优先 P3 / P1，再 P4，再 P2，再 P0。
+eval_avg_seq_len
+mp4_count
+First MP4
+loss_passed
+reload_passed
+latest_checkpoint
 ```
 
-一小时后先比较：
+打开视频：
+
+```bash
+find logs/h200_fastexplore -type f -name "*.mp4" | sort | head -30
+```
+
+## 8. 当前判断标准
+
+一小时内优先选：
 
 ```text
-是否完成 1k、10k、30k
-loss_check 是否 passed
-reload_check 是否 passed
-eval results.json 是否存在
-mp4_count 是否大于 0
-latest_checkpoint 是否存在
-last_loss 是否异常
+1. 30k 阶段完成。
+2. loss_check passed。
+3. reload_check passed。
+4. D 环境 eval 能产生 results.json 和 mp4。
+5. mp4 中动作不是完全静止，不爆炸，夹爪方向基本合理。
+6. eval_avg_seq_len 更高。
 ```
 
-如果某条路线没跑完 30k，也不要等它；先用已完成阶段比较。
-
-## 7. 一小时后怎么直观看 mp4
-
-先跑比较脚本：
-
-```bash
-bash examples/calvin/train_files/compare_h200_fastexplore.sh
-cat logs/h200_fastexplore/summary/compare_routes.md
-```
-
-表格里会列出每条路线当前最好阶段的 `First MP4`。直接打开对应文件：
-
-```bash
-ls logs/h200_fastexplore/summary
-find logs/h200_fastexplore -path "*/mp4/*.mp4" | sort | head -20
-```
-
-优先看这些现象：
-
-```text
-1. 完全不动：优先怀疑 checkpoint、action head 输出、unnormalize。
-2. 动作爆炸：优先怀疑 action scale / q01 q99 / mask。
-3. 夹爪方向反：优先怀疑 gripper channel。
-4. 接近目标但抓不到：优先比较 Adapter / LoRA 是否改善任务区分。
-5. 10k 可以动但 30k 变差：优先怀疑学习率或过拟合。
-```
-
-## 8. 给最好路线补更大 eval
-
-如果一小时后某条路线明显领先，再单独补 100 条序列：
-
-```bash
-export ROUTE_LOG_DIR=<route_log_dir>
-export CKPT_PATH=<checkpoint_pt_path>
-export PORT=5694
-export EVAL_GPU=0
-export CUDA_VISIBLE_DEVICES="${EVAL_GPU}"
-export RUN_ID=best_eval_server
-export LOG_DIR="${ROUTE_LOG_DIR}/server_best_eval"
-
-bash examples/calvin/eval_files/run_policy_server_debug.sh
-```
-
-另开终端：
-
-```bash
-cd "${PROJECT_ROOT}"
-conda activate calvin
-
-export CKPT_PATH=<checkpoint_pt_path>
-export ROUTE_LOG_DIR=<route_log_dir>
-export HOST=127.0.0.1
-export PORT=5694
-export NUM_SEQUENCES=100
-export UNNORM_KEY=franka
-export RUN_ID=best_eval_100seq
-export LOG_DIR="${ROUTE_LOG_DIR}/eval_best_100seq"
-export DATASET_PATH="${H200_CALVIN_EVAL_DATASET_PATH}"
-export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
-
-bash examples/calvin/eval_files/eval_calvin_debug.sh
-```
-
-eval 完成后重新比较：
-
-```bash
-bash examples/calvin/train_files/compare_h200_fastexplore.sh
-cat logs/h200_fastexplore/summary/compare_routes.md
-```
+如果没有正式 validation，不要把 D_D training smoke eval 写成最终 CALVIN validation 指标。

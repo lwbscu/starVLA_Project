@@ -37,6 +37,12 @@ export EVAL_HOST=${EVAL_HOST:-127.0.0.1}
 export EVAL_PORT=${EVAL_PORT:-5694}
 export EVAL_GPU=${EVAL_GPU:-${TRAIN_GPUS%%,*}}
 export EVAL_UNNORM_KEY=${EVAL_UNNORM_KEY:-franka}
+export SMOKE_STEPS=${SMOKE_STEPS:-1000}
+export FAST_STEPS=${FAST_STEPS:-10000}
+export DECISION_STEPS=${DECISION_STEPS:-30000}
+export SMOKE_SAVE_INTERVAL=${SMOKE_SAVE_INTERVAL:-${SMOKE_STEPS}}
+export FAST_SAVE_INTERVAL=${FAST_SAVE_INTERVAL:-5000}
+export DECISION_SAVE_INTERVAL=${DECISION_SAVE_INTERVAL:-10000}
 export SMOKE_EVAL_SEQUENCES=${SMOKE_EVAL_SEQUENCES:-1}
 export FAST_EVAL_SEQUENCES=${FAST_EVAL_SEQUENCES:-3}
 export DECISION_EVAL_SEQUENCES=${DECISION_EVAL_SEQUENCES:-5}
@@ -84,6 +90,13 @@ if [[ ! -d "${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}" ]]; then
   exit 2
 fi
 
+is_calvin_eval_dataset() {
+  local candidate=$1
+  [[ -f "${candidate}/validation/.hydra/merged_config.yaml" ]] \
+    || [[ -f "${candidate}/training/.hydra/merged_config.yaml" ]] \
+    || [[ -f "${candidate}/.hydra/merged_config.yaml" ]]
+}
+
 resolve_eval_dataset() {
   if [[ -n "${H200_CALVIN_EVAL_DATASET_PATH:-}" ]]; then
     echo "${H200_CALVIN_EVAL_DATASET_PATH}"
@@ -92,26 +105,29 @@ resolve_eval_dataset() {
 
   local candidate
   for candidate in \
+    "${H200_CALVIN_DATA_ROOT%/}/task_ABC_D" \
+    "${H200_CALVIN_DATA_ROOT%/}/task_D_D" \
     "${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset" \
     "${PROJECT_ROOT}/calvin/dataset/task_ABC_D" \
+    "${PROJECT_ROOT}/calvin/dataset/task_D_D" \
     "${PROJECT_ROOT}/calvin/dataset/calvin_task_ABC_D" \
     "${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}"
   do
-    if [[ -d "${candidate}/validation" ]]; then
+    if [[ -d "${candidate}" ]] && is_calvin_eval_dataset "${candidate}"; then
       echo "${candidate}"
       return 0
     fi
   done
 
-  echo "No CALVIN eval dataset with validation/ found. Set H200_CALVIN_EVAL_DATASET_PATH explicitly." >&2
+  echo "No CALVIN eval dataset found. Expected validation/.hydra, training/.hydra, or .hydra. Set H200_CALVIN_EVAL_DATASET_PATH explicitly." >&2
   return 2
 }
 
 if [[ "${EVAL_ENABLED}" == "1" ]]; then
   H200_CALVIN_EVAL_DATASET_PATH=$(resolve_eval_dataset)
   export H200_CALVIN_EVAL_DATASET_PATH
-  if [[ ! -d "${H200_CALVIN_EVAL_DATASET_PATH}/validation" ]]; then
-    echo "Eval dataset must contain validation/: ${H200_CALVIN_EVAL_DATASET_PATH}" >&2
+  if ! is_calvin_eval_dataset "${H200_CALVIN_EVAL_DATASET_PATH}"; then
+    echo "Eval dataset must contain validation/.hydra, training/.hydra, or .hydra: ${H200_CALVIN_EVAL_DATASET_PATH}" >&2
     exit 2
   fi
   if [[ ! -x "${CALVIN_PYTHON}" ]]; then
@@ -148,6 +164,9 @@ echo "EVAL_ENABLED=${EVAL_ENABLED}"
 echo "EVAL_PORT=${EVAL_PORT}"
 echo "EVAL_GPU=${EVAL_GPU}"
 echo "H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-<disabled>}"
+echo "SMOKE_STEPS=${SMOKE_STEPS}"
+echo "FAST_STEPS=${FAST_STEPS}"
+echo "DECISION_STEPS=${DECISION_STEPS}"
 
 wait_for_policy_server() {
   local server_pid=$1
@@ -300,8 +319,8 @@ run_stage() {
   echo "===== DONE stage=${stage_name} route=${ROUTE} ckpt=${ckpt_path} ====="
 }
 
-run_stage smoke1k 1000 1000 "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
-run_stage fast10k 10000 5000 "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
-run_stage decision30k 30000 10000 "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${DECISION_EVAL_SEQUENCES}"
+run_stage smoke1k "${SMOKE_STEPS}" "${SMOKE_SAVE_INTERVAL}" "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
+run_stage fast10k "${FAST_STEPS}" "${FAST_SAVE_INTERVAL}" "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
+run_stage decision30k "${DECISION_STEPS}" "${DECISION_SAVE_INTERVAL}" "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${DECISION_EVAL_SEQUENCES}"
 
 echo "PIPELINE_DONE route=${ROUTE} log=${PIPELINE_LOG}"
