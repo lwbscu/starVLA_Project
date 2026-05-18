@@ -113,14 +113,19 @@ test -f playground/Pretrained_models/Qwen3.5-4B/config.json
 cd "${PROJECT_ROOT}"
 export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
+export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
 
-"${CONDA_ROOT}/envs/calvin/bin/python" -m pip uninstall -y \
+"${CALVIN_PYTHON}" -c "import sys; print(sys.executable); print(sys.version)"
+
+"${CALVIN_PYTHON}" -m pip uninstall -y \
   opencv-python opencv-contrib-python opencv-python-headless opencv-contrib-python-headless
-"${CONDA_ROOT}/envs/calvin/bin/python" -m pip install "opencv-python-headless==4.11.0.86"
+"${CALVIN_PYTHON}" -m pip install "opencv-python-headless==4.11.0.86"
 
-"${CONDA_ROOT}/envs/calvin/bin/python" -c "import cv2; print('cv2 import OK', cv2.__version__)"
+"${CALVIN_PYTHON}" -c "import sys, cv2; print(sys.executable); print('cv2 import OK', cv2.__version__, cv2.__file__)"
 conda activate "${STARVLA_ENV}"
 ```
+
+如果安装日志里出现 `cp313` 这类 Python 3.13 wheel，但 `${CALVIN_PYTHON}` 是 Python 3.8，说明裸 `pip/python` 修的是另一个环境；必须重跑上面的绝对路径命令。
 
 ## 3. 先测试已有 P0 30k 权重
 
