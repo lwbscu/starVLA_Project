@@ -205,42 +205,75 @@ def _patch_calvin_scene_data_path(cfg) -> Path:
             f"data_path={data_path}; candidates={[str(candidate) for candidate in candidates]}"
         )
 
-    for cfg_path in ("env.scene_cfg.data_path", "scene.data_path", "data_path"):
-        if OmegaConf.select(cfg, cfg_path) is not None:
-            OmegaConf.update(cfg, cfg_path, str(asset_root), merge=True)
+    env_scene_cfg = _select_resolved(cfg, "env.scene_cfg")
+    if isinstance(env_scene_cfg, dict):
+        env_scene_cfg["data_path"] = str(asset_root)
+        OmegaConf.update(cfg, "env.scene_cfg", env_scene_cfg, merge=False)
+
+    scene_cfg = _select_resolved(cfg, "scene")
+    if isinstance(scene_cfg, dict) and "data_path" in scene_cfg:
+        scene_cfg["data_path"] = str(asset_root)
+        OmegaConf.update(cfg, "scene", scene_cfg, merge=False)
+
+    if OmegaConf.select(cfg, "data_path") is not None:
+        OmegaConf.update(cfg, "data_path", str(asset_root), merge=True)
     logger.info("Resolved CALVIN scene data_path to %s", asset_root)
     return asset_root
 
 
 def _patch_calvin_env_references(cfg, asset_root: Path) -> None:
     """Resolve Hydra references and CALVIN URDF paths that direct env construction needs."""
-    scene_mappings = {
-        "env.robot_cfg.base_position": "scene.robot_base_position",
-        "env.robot_cfg.base_orientation": "scene.robot_base_orientation",
-        "env.robot_cfg.initial_joint_positions": "scene.robot_initial_joint_positions",
-        "env.scene_cfg.robot_base_position": "scene.robot_base_position",
-        "env.scene_cfg.robot_base_orientation": "scene.robot_base_orientation",
-        "env.scene_cfg.robot_initial_joint_positions": "scene.robot_initial_joint_positions",
-    }
-    for target_path, source_path in scene_mappings.items():
-        if OmegaConf.select(cfg, target_path) is None:
-            continue
-        source_value = _select_resolved(cfg, source_path)
-        if source_value is not None:
-            OmegaConf.update(cfg, target_path, copy.deepcopy(source_value), merge=True)
+    robot_cfg = _select_resolved(cfg, "env.robot_cfg")
+    if robot_cfg is None:
+        robot_cfg = {}
+    if not isinstance(robot_cfg, dict):
+        raise TypeError(f"Expected env.robot_cfg to resolve to a dict, got {type(robot_cfg).__name__}: {robot_cfg}")
 
-    robot_filename = OmegaConf.select(cfg, "env.robot_cfg.filename")
-    if robot_filename:
-        robot_path = Path(str(robot_filename))
-        if not robot_path.is_absolute():
-            robot_path = asset_root / robot_path
-        if not robot_path.is_file():
-            raise FileNotFoundError(
-                "CALVIN robot URDF not found after resolving asset root: "
-                f"{robot_path}. asset_root={asset_root}; original_filename={robot_filename}"
-            )
-        OmegaConf.update(cfg, "env.robot_cfg.filename", str(robot_path), merge=True)
-        logger.info("Resolved CALVIN robot URDF to %s", robot_path)
+    scene_cfg = _select_resolved(cfg, "env.scene_cfg")
+    if scene_cfg is None:
+        scene_cfg = {}
+    if not isinstance(scene_cfg, dict):
+        raise TypeError(f"Expected env.scene_cfg to resolve to a dict, got {type(scene_cfg).__name__}: {scene_cfg}")
+
+    scene_mappings = {
+        "base_position": "scene.robot_base_position",
+        "base_orientation": "scene.robot_base_orientation",
+        "initial_joint_positions": "scene.robot_initial_joint_positions",
+    }
+    for target_key, source_path in scene_mappings.items():
+        source_value = _select_resolved(cfg, source_path)
+        if source_value is not None and target_key not in robot_cfg:
+            robot_cfg[target_key] = copy.deepcopy(source_value)
+
+    scene_mappings = {
+        "robot_base_position": "scene.robot_base_position",
+        "robot_base_orientation": "scene.robot_base_orientation",
+        "robot_initial_joint_positions": "scene.robot_initial_joint_positions",
+    }
+    for target_key, source_path in scene_mappings.items():
+        source_value = _select_resolved(cfg, source_path)
+        if source_value is not None and target_key not in scene_cfg:
+            scene_cfg[target_key] = copy.deepcopy(source_value)
+
+    scene_cfg["data_path"] = str(asset_root)
+
+    robot_filename = robot_cfg.get("filename")
+    if not robot_filename:
+        raise KeyError(f"env.robot_cfg did not resolve a robot filename. robot_cfg={robot_cfg}")
+
+    robot_path = Path(str(robot_filename))
+    if not robot_path.is_absolute():
+        robot_path = asset_root / robot_path
+    if not robot_path.is_file():
+        raise FileNotFoundError(
+            "CALVIN robot URDF not found after resolving asset root: "
+            f"{robot_path}. asset_root={asset_root}; original_filename={robot_filename}"
+        )
+    robot_cfg["filename"] = str(robot_path)
+    logger.info("Resolved CALVIN robot URDF to %s", robot_path)
+
+    OmegaConf.update(cfg, "env.robot_cfg", robot_cfg, merge=False)
+    OmegaConf.update(cfg, "env.scene_cfg", scene_cfg, merge=False)
 
 
 def _instantiate_calvin_env_direct(cfg, instantiate_kwargs: dict):
