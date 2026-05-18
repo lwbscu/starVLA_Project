@@ -260,6 +260,280 @@ find logs -path "*/mp4/*.mp4" | sort
 find logs -path "*/mp4/results.json" | sort
 ```
 
+## 13. Qwen3.5 四路线严谨验证
+
+当前正式候选只使用 `Qwen3.5-0.8B`，不使用 QwenFast、PI、GR00T、Qwen2.5 作为考核路线。
+
+四条路线：
+
+```text
+P0: Qwen3.5-0.8B + QwenOFT
+P1: Qwen3.5-0.8B + QwenAdapter
+P2: Qwen3.5-0.8B + LoRA + QwenOFT
+P3: Qwen3.5-0.8B + LoRA + QwenAdapter
+```
+
+本地 RTX 4060 8GB 已验证：
+
+```text
+P0: 100 step、loss check、checkpoint reload、policy server、debug eval、mp4 通过
+P1: 100 step、loss check、checkpoint reload、policy server、debug eval、mp4 通过；本地需 CPU optimizer offload
+P2: 100 step、loss check、checkpoint reload、policy server、debug eval、mp4 通过
+P3: 100 step、loss check、checkpoint reload、policy server、debug eval、mp4 通过；本地需 CPU optimizer offload
+```
+
+100 step 只用于工程闭环验证，不代表 CALVIN 指标。
+
+单路线 smoke 命令：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+
+ROUTE=p0_oft \
+MAX_TRAIN_STEPS=100 \
+SAVE_INTERVAL=100 \
+CUDA_VISIBLE_DEVICES=0 \
+bash examples/calvin/train_files/run_route_validation_train.sh
+```
+
+可选路线：
+
+```bash
+ROUTE=p0_oft
+ROUTE=p1_adapter
+ROUTE=p2_lora_oft
+ROUTE=p3_lora_adapter
+```
+
+本地 8GB 跑 P1/P3 时使用 CPU optimizer offload：
+
+```bash
+ROUTE=p1_adapter \
+MAX_TRAIN_STEPS=100 \
+SAVE_INTERVAL=100 \
+CUDA_VISIBLE_DEVICES=0 \
+ACCELERATE_CONFIG=starVLA/config/deepseeds/deepspeed_zero2_route_validation_cpu_offload.yaml \
+bash examples/calvin/train_files/run_route_validation_train.sh
+```
+
+成功标准：
+
+```text
+metrics/loss_check.json 中 passed=true
+metrics/reload_check.json 或 reload_check_steps_*.json 中 passed=true
+checkpoints/<run_id>/checkpoints/steps_<N>_pytorch_model.pt 存在
+policy server metadata 中 action_chunk_size=8
+available_unnorm_keys 包含 franka
+eval 生成 results.json 和 mp4
+```
+
+## 14. H200 服务器环境
+
+服务器建议目录仍保持一致：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects
+git clone https://github.com/lwbscu/starVLA_Project.git
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+git checkout starVLA_dev
+```
+
+安装环境：
+
+```bash
+conda create -n starVLA_qwen35 python=3.10 -y
+conda activate starVLA_qwen35
+
+pip install -r requirements.txt
+pip install -U "transformers==5.3.0"
+pip install flash-attn --no-build-isolation
+pip install -e .
+```
+
+验证：
+
+```bash
+conda run -n starVLA_qwen35 python -c "from transformers import Qwen3_5ForConditionalGeneration; print('Qwen3.5 import OK')"
+conda run -n starVLA_qwen35 python -c "import torch, peft, starVLA; print(torch.__version__, peft.__version__, torch.cuda.device_count())"
+```
+
+准备权重：
+
+```bash
+mkdir -p playground/Pretrained_models
+
+git lfs install
+git clone https://huggingface.co/Qwen/Qwen3.5-0.8B \
+  playground/Pretrained_models/Qwen3.5-0.8B
+```
+
+如果 `huggingface-cli download` 在服务器网络环境稳定，也可以使用：
+
+```bash
+huggingface-cli download Qwen/Qwen3.5-0.8B \
+  --local-dir playground/Pretrained_models/Qwen3.5-0.8B \
+  --local-dir-use-symlinks False
+```
+
+准备 LeRobot 训练数据：
+
+```bash
+mkdir -p playground/Datasets/calvin
+git lfs install
+git clone https://huggingface.co/datasets/CollisionCode/calvin_abc_d_lerobot_v2.1 \
+  playground/Datasets/calvin/calvin_abc_d_lerobot_v2.1
+
+test -f playground/Datasets/calvin/calvin_abc_d_lerobot_v2.1/meta/modality.json \
+  || cp examples/calvin/train_files/modality.json \
+        playground/Datasets/calvin/calvin_abc_d_lerobot_v2.1/meta/modality.json
+```
+
+检查：
+
+```bash
+test -f playground/Pretrained_models/Qwen3.5-0.8B/config.json && echo "Qwen3.5 OK"
+test -f playground/Datasets/calvin/calvin_abc_d_lerobot_v2.1/meta/modality.json && echo "CALVIN LeRobot OK"
+
+NO_ALBUMENTATIONS_UPDATE=1 conda run -n starVLA_qwen35 python -c "from omegaconf import OmegaConf; from starVLA.dataloader.lerobot_datasets import get_vla_dataset; cfg=OmegaConf.create({'data_root_dir':'playground/Datasets/calvin','data_mix':'calvin_abc_d','delete_pause_frame':False,'video_backend':'torchvision_av','load_all_data_for_training':False,'require_existing_parquet':True,'num_trajectories':1}); dataset=get_vla_dataset(cfg); sample=dataset[0]; print(len(dataset), sample['action'].shape, sample['robot_tag'])"
+```
+
+## 15. H200 四路线 Smoke
+
+先做 100 step 并行 smoke，确认服务器环境、数据、checkpoint 和 reload 全部正常。
+
+默认使用 GPU 0/1/2/3 分别跑 P0/P1/P2/P3：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+
+MAX_TRAIN_STEPS=100 \
+SAVE_INTERVAL=100 \
+GPU_LIST="0 1 2 3" \
+ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
+输出目录：
+
+```text
+logs/h200_route_train/log_YYYYMMDD_HHMMSS_qwen35_0p8b_matrix/
+  h200_p0_oft_100step/
+  h200_p1_adapter_100step/
+  h200_p2_lora_oft_100step/
+  h200_p3_lora_adapter_100step/
+```
+
+检查：
+
+```bash
+find logs/h200_route_train -path "*/metrics/loss_check.json" | sort
+find logs/h200_route_train -path "*/metrics/reload_check_steps_100.json" | sort
+find logs/h200_route_train -path "*/checkpoints/*/checkpoints/steps_100_pytorch_model.pt" | sort
+```
+
+## 16. H200 四路线长训
+
+100 step smoke 全部通过后，启动 30k 长训：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+
+MAX_TRAIN_STEPS=30000 \
+SAVE_INTERVAL=5000 \
+GPU_LIST="0 1 2 3" \
+ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
+如果只跑某一条路线：
+
+```bash
+MAX_TRAIN_STEPS=30000 \
+SAVE_INTERVAL=5000 \
+GPU_LIST="0" \
+ROUTE_LIST="p0_oft" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
+如果要用 8 张 H200 同时跑两组随机对照，使用不同 `LOG_ROOT` 和不同 GPU：
+
+```bash
+LOG_ROOT=logs/h200_route_train/log_runA \
+MAX_TRAIN_STEPS=30000 \
+SAVE_INTERVAL=5000 \
+GPU_LIST="0 1 2 3" \
+ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
+```bash
+LOG_ROOT=logs/h200_route_train/log_runB \
+MAX_TRAIN_STEPS=30000 \
+SAVE_INTERVAL=5000 \
+GPU_LIST="4 5 6 7" \
+ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
+长训通过标准：
+
+```text
+训练进程 exit code = 0
+metrics/loss_check.json 中 passed=true
+metrics/reload_check_steps_30000.json 中 passed=true
+steps_5000/10000/15000/20000/25000/30000 checkpoint 存在
+terminal/train.log 中无 NaN、Inf、OOM、checkpoint load error
+```
+
+## 17. H200 训练后 Eval
+
+对每条路线选取 `steps_10000`、`steps_20000`、`steps_30000` 做 debug eval，再挑候选跑完整 CALVIN ABC→D eval。
+
+启动 policy server：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+
+export CKPT_PATH=logs/h200_route_train/log_YYYYMMDD_HHMMSS_qwen35_0p8b_matrix/h200_p0_oft_30000step/checkpoints/h200_p0_oft_30000step/checkpoints/steps_30000_pytorch_model.pt
+export PORT=5694
+export CUDA_VISIBLE_DEVICES=0
+export STAR_VLA_PYTHON="$(conda info --base)/envs/starVLA_qwen35/bin/python"
+
+bash examples/calvin/eval_files/run_policy_server_debug.sh
+```
+
+另开终端跑 debug eval：
+
+```bash
+cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
+
+export CKPT_PATH=logs/h200_route_train/log_YYYYMMDD_HHMMSS_qwen35_0p8b_matrix/h200_p0_oft_30000step/checkpoints/h200_p0_oft_30000step/checkpoints/steps_30000_pytorch_model.pt
+export PORT=5694
+export NUM_SEQUENCES=5
+export UNNORM_KEY=franka
+export RUN_ID=h200_p0_oft_30000_eval_debug5
+
+bash examples/calvin/eval_files/eval_calvin_debug.sh
+```
+
+评估产物：
+
+```text
+terminal/eval.log
+mp4/results.json
+mp4/*.mp4
+```
+
+权重选择规则：
+
+```text
+优先看 debug/full eval 的平均任务链长度
+再看 Task1 成功率
+再看 failure pattern 是否容易针对性修复
+不只按训练 loss 选择 checkpoint
+不提交没有 results.json 和 mp4 的 checkpoint
+```
+
 输出文件：
 
 ```text

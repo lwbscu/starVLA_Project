@@ -183,6 +183,10 @@ data_processed
 llavavla/conf/qwenvla_lmdb_3Lpretrain.yaml
 extracted_frames
 starVLA/config/deepseeds/*
+!starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml
+!starVLA/config/deepseeds/deepspeed_zero2_route_validation_cpu_offload.yaml
+!starVLA/config/deepseeds/ds_config_route_validation.yaml
+!starVLA/config/deepseeds/ds_config_route_validation_cpu_offload.yaml
 **/bar
 llavavla/model/openvla_temp
 real_deployment/upload/push_model_to_hf.py
@@ -263,6 +267,8 @@ tmp
 !docs/model_zoo.md
 !docs/starVLA_guideline.md
 !docs/WM4A.md
+!docs/study/
+!docs/study/*.md
 
 
 logs/*

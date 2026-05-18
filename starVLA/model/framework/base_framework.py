@@ -16,6 +16,7 @@ import torch
 from transformers import PretrainedConfig, PreTrainedModel
 
 from starVLA.model.framework.share_tools import dict_to_namespace, read_mode_config
+from starVLA.model.lora_utils import apply_lora_if_enabled
 from starVLA.model.tools import FRAMEWORK_REGISTRY, FrameworkTools, auto_get_trainable_modules
 from starVLA.training.trainer_utils import initialize_overwatch
 
@@ -237,6 +238,7 @@ class baseframework(PreTrainedModel):
         model_config.trainer.pretrained_checkpoint = None
         
         FrameworkModel = build_framework(cfg=model_config)
+        FrameworkModel = apply_lora_if_enabled(FrameworkModel, model_config)
         # set for action un-norm
         FrameworkModel.norm_stats = norm_stats
         # Load from Checkpoint (Custom --> should load both *projector* and *llm* weights)
@@ -266,4 +268,3 @@ class baseframework(PreTrainedModel):
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
         return FrameworkModel
-

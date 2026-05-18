@@ -63,9 +63,12 @@ class PolicyServerWrapper:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
         elif "future_action_window_size" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["future_action_window_size"]) + 1
+        elif "num_actions_chunk" in action_model_cfg:
+            self._action_chunk_size = int(action_model_cfg["num_actions_chunk"])
         else:
             raise ValueError(
-                f"PolicyServerWrapper: no action_horizon or future_action_window_size found in model config for {self._ckpt_path}"
+                f"PolicyServerWrapper: no action_horizon, future_action_window_size, or num_actions_chunk "
+                f"found in model config for {self._ckpt_path}"
             )
         # Cache of PolicyNormProcessor instances per unnorm_key.
         # For single-dataset ckpts unnorm_key is auto-selected; for multi-dataset

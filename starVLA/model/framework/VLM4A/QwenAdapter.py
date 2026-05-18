@@ -28,21 +28,20 @@ from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config
 from starVLA.model.modules.action_model.VLA_AdapterHeader import VLA_Adapter_L1RegressionActionHead, get_action_model
 from starVLA.model.modules.vlm import get_vlm_model
-from starVLA.model.modules.vlm.QWen3 import IMAGE_TOKEN_INDEX
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
 
-def get_image_token_counts(batch_inputs):
-    IMAGE_TOKEN_ID = IMAGE_TOKEN_INDEX
+def get_image_token_counts(batch_inputs, image_token_id: int):
+    IMAGE_TOKEN_ID = image_token_id
+    input_ids = batch_inputs["input_ids"]
+    image_mask = input_ids == IMAGE_TOKEN_ID
+    batch_size, seq_len = input_ids.shape
+    seq_indices = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
 
-    # input_ids shape: [Batch_Size, Seq_Len]
-    # result shape: [Batch_Size]
-    num_tokens_per_sample = torch.sum(batch_inputs["input_ids"] == IMAGE_TOKEN_ID, dim=1)
-    # also get the last index of the image token for each sample if needed
-    last_index_per_sample = (batch_inputs["input_ids"] == IMAGE_TOKEN_ID).int().cumsum(dim=1).argmax(dim=1)
-    # also get the first index of the image token for each sample if needed
-    first_index_per_sample = (batch_inputs["input_ids"] == IMAGE_TOKEN_ID).int().cumsum(dim=1).argmin(dim=1)
+    num_tokens_per_sample = image_mask.sum(dim=1)
+    first_index_per_sample = torch.where(image_mask, seq_indices, torch.full_like(seq_indices, seq_len)).min(dim=1).values
+    last_index_per_sample = torch.where(image_mask, seq_indices, torch.full_like(seq_indices, -1)).max(dim=1).values
 
     return num_tokens_per_sample, first_index_per_sample, last_index_per_sample
 
@@ -192,6 +191,10 @@ class Qwen_Adapter(baseframework):
 
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
         # ! often state is None
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if train_obs_image_size:
+            batch_images = resize_images(batch_images, target_size=tuple(train_obs_image_size))
+
         # ============================================================
         # FIX: Insert action placeholder tokens BEFORE tokenization
         # ============================================================
@@ -254,6 +257,7 @@ class Qwen_Adapter(baseframework):
                     output_attentions=False,
                     output_hidden_states=True,
                     return_dict=True,
+                    logits_to_keep=1,
                 )
         finally:
             hook_handle.remove()
@@ -263,7 +267,13 @@ class Qwen_Adapter(baseframework):
         # Extract features (FULLY VECTORIZED)
         # ============================================================
         multi_layer_hidden_states = []
-        num_images, first_index_per_sample, last_index_per_sample = get_image_token_counts(qwen_inputs)
+        image_token_id = int(self.qwen_vl_interface.model.config.image_token_id)
+        num_images, first_index_per_sample, last_index_per_sample = get_image_token_counts(qwen_inputs, image_token_id)
+        if (num_images == 0).any():
+            raise RuntimeError(
+                f"QwenAdapter found samples with zero image tokens for image_token_id={image_token_id}. "
+                f"counts={num_images.tolist()}"
+            )
 
         max_patch_len = -999
         for b in range(batch_size):
@@ -446,6 +456,7 @@ class Qwen_Adapter(baseframework):
                     output_attentions=False,
                     output_hidden_states=True,
                     return_dict=True,
+                    logits_to_keep=1,
                 )
         finally:
             hook_handle.remove()
@@ -455,7 +466,13 @@ class Qwen_Adapter(baseframework):
         # Extract features (FULLY VECTORIZED)
         # ============================================================
         multi_layer_hidden_states = []
-        num_images, first_index_per_sample, last_index_per_sample = get_image_token_counts(qwen_inputs)
+        image_token_id = int(self.qwen_vl_interface.model.config.image_token_id)
+        num_images, first_index_per_sample, last_index_per_sample = get_image_token_counts(qwen_inputs, image_token_id)
+        if (num_images == 0).any():
+            raise RuntimeError(
+                f"QwenAdapter found samples with zero image tokens for image_token_id={image_token_id}. "
+                f"counts={num_images.tolist()}"
+            )
 
         max_patch_len = -999
         for b in range(batch_size):

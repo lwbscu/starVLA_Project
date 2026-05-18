@@ -35,6 +35,7 @@ from transformers import AutoProcessor, get_scheduler
 from starVLA.dataloader import build_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
+from starVLA.model.lora_utils import apply_lora_if_enabled
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
@@ -424,6 +425,7 @@ def main(cfg) -> None:
 
     output_dir = setup_directories(cfg=cfg)
     vla = build_framework(cfg)
+    vla = apply_lora_if_enabled(vla, cfg, sanitize_freeze_modules=True)
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
 
