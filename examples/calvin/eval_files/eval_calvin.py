@@ -119,6 +119,63 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _patch_calvin_scene_data_path(cfg) -> None:
+    """Resolve CALVIN scene assets to an absolute path before PyBullet loads URDFs."""
+    data_path = OmegaConf.select(cfg, "env.scene_cfg.data_path") or OmegaConf.select(cfg, "scene.data_path")
+    if data_path is None:
+        return
+
+    data_path = Path(str(data_path))
+    if data_path.is_absolute():
+        return
+
+    try:
+        import calvin_env
+    except ImportError:
+        return
+
+    calvin_pkg = Path(calvin_env.__file__).resolve()
+    candidates = [
+        calvin_pkg.parents[1] / data_path,
+        calvin_pkg.parents[2] / data_path,
+        Path.cwd() / data_path,
+    ]
+    asset_root = next((candidate for candidate in candidates if (candidate / "plane" / "plane.urdf").is_file()), None)
+    if asset_root is None:
+        logger.warning(
+            "Could not resolve CALVIN scene data_path=%s. candidates=%s",
+            data_path,
+            [str(candidate) for candidate in candidates],
+        )
+        return
+
+    for cfg_path in ("env.scene_cfg.data_path", "scene.data_path", "data_path"):
+        if OmegaConf.select(cfg, cfg_path) is not None:
+            OmegaConf.update(cfg, cfg_path, str(asset_root), merge=True)
+    logger.info("Resolved CALVIN scene data_path to %s", asset_root)
+
+
+def _instantiate_calvin_env_direct(cfg, instantiate_kwargs: dict):
+    """Instantiate PlayTableSimEnv directly so PyBullet errors are not hidden by Hydra wrapping."""
+    target_path = OmegaConf.select(cfg, "env._target_")
+    if not target_path:
+        raise ValueError("CALVIN env config is missing env._target_")
+
+    env_kwargs = {key: cfg.env[key] for key in cfg.env.keys() if key not in {"_target_", "_recursive_"}}
+    env_kwargs.update(instantiate_kwargs)
+    target_cls = hydra.utils.get_class(str(target_path))
+    try:
+        return target_cls(**env_kwargs)
+    except Exception:
+        logger.exception(
+            "Direct CALVIN env construction failed. target=%s use_egl=%s scene_data_path=%s",
+            target_path,
+            env_kwargs.get("use_egl"),
+            OmegaConf.select(cfg, "env.scene_cfg.data_path"),
+        )
+        raise
+
+
 @dataclasses.dataclass
 class Args:
     #################################################################################################################
@@ -258,6 +315,7 @@ def make_env(dataset_path: str):
     config_path = val_folder / ".hydra" / "merged_config.yaml"
     cfg = OmegaConf.load(config_path)
     force_no_egl = _env_flag("CALVIN_FORCE_NO_EGL", "1")
+    _patch_calvin_scene_data_path(cfg)
 
     # Remove tactile sensor from camera list if it exists
     if hasattr(cfg.env, "cameras") and "tactile" in cfg.env.cameras:
@@ -277,9 +335,6 @@ def make_env(dataset_path: str):
             updated_paths or ["instantiate_kwarg:use_egl"],
         )
 
-    # Initialize environment with modified config
-    import hydra
-
     instantiate_kwargs = {
         "show_gui": False,
         "use_vr": False,
@@ -288,7 +343,7 @@ def make_env(dataset_path: str):
     if force_no_egl:
         instantiate_kwargs["use_egl"] = False
 
-    env = hydra.utils.instantiate(cfg.env, **instantiate_kwargs)
+    env = _instantiate_calvin_env_direct(cfg, instantiate_kwargs)
 
     return env
 
