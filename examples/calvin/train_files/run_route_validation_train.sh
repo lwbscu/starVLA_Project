@@ -20,6 +20,32 @@ CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
+CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-}
+CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-}
+CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-}
+
+if [[ -n "${CALVIN_DATA_ROOT}" || -n "${CALVIN_DATA_MIX}" || -n "${CALVIN_DATA_NAME}" ]]; then
+  : "${CALVIN_DATA_ROOT:?Set CALVIN_DATA_ROOT when overriding CALVIN data}"
+  : "${CALVIN_DATA_MIX:?Set CALVIN_DATA_MIX when overriding CALVIN data}"
+  : "${CALVIN_DATA_NAME:?Set CALVIN_DATA_NAME when overriding CALVIN data}"
+  CALVIN_DATASET_DIR="${CALVIN_DATA_ROOT%/}/${CALVIN_DATA_NAME}"
+  if [[ ! -d "${CALVIN_DATASET_DIR}" ]]; then
+    echo "CALVIN LeRobot dataset directory not found: ${CALVIN_DATASET_DIR}" >&2
+    exit 2
+  fi
+  if [[ ! -f "${CALVIN_DATASET_DIR}/meta/info.json" ]]; then
+    echo "Missing ${CALVIN_DATASET_DIR}/meta/info.json. Training requires LeRobot-format CALVIN data, not raw CALVIN." >&2
+    exit 2
+  fi
+  if [[ ! -f "${CALVIN_DATASET_DIR}/meta/modality.json" ]]; then
+    echo "Missing ${CALVIN_DATASET_DIR}/meta/modality.json. Copy examples/calvin/train_files/modality.json into the dataset meta directory." >&2
+    exit 2
+  fi
+  if [[ ! -d "${CALVIN_DATASET_DIR}/data" ]]; then
+    echo "Missing ${CALVIN_DATASET_DIR}/data. Training requires LeRobot parquet data." >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "${LOG_DIR}"/{train,eval,terminal,mp4,configs,metrics,checkpoints}
 cp "${CONFIG_YAML}" "${LOG_DIR}/configs/"
@@ -41,6 +67,13 @@ COMMON_ARGS=(
   --run_root_dir "${LOG_DIR}/checkpoints"
   --run_id "${RUN_ID}"
 )
+
+if [[ -n "${CALVIN_DATA_ROOT}" ]]; then
+  COMMON_ARGS+=(
+    --datasets.vla_data.data_root_dir "${CALVIN_DATA_ROOT}"
+    --datasets.vla_data.data_mix "${CALVIN_DATA_MIX}"
+  )
+fi
 
 case "${ROUTE}" in
   p0_oft)
@@ -108,6 +141,9 @@ set +e
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
   echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
+  echo "CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-<config_yaml>}"
+  echo "CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-<config_yaml>}"
+  echo "CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-<registry>}"
 
   "${STAR_VLA_PYTHON}" -m accelerate.commands.launch "${COMMON_ARGS[@]}" "${ROUTE_ARGS[@]}"
 } 2>&1 | tee "${LOG_DIR}/terminal/train.log"

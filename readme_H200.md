@@ -25,6 +25,10 @@ export NO_ALBUMENTATIONS_UPDATE=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export STAR_VLA_PYTHON="$(conda info --base)/envs/starVLA_qwen35/bin/python"
+export H200_CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
+export H200_CALVIN_DATA_NAME=calvin_task_ABC_D
+export H200_CALVIN_DATA_MIX=calvin_abc_d_h200
+export H200_CALVIN_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
 ```
 
 基础检查：
@@ -39,8 +43,13 @@ git status --short
 "${STAR_VLA_PYTHON}" -c "import torch, transformers; print(torch.__version__, transformers.__version__, torch.cuda.is_available())"
 "${STAR_VLA_PYTHON}" -c "from transformers import Qwen3_5ForConditionalGeneration; print('Qwen3.5 import OK')"
 test -f playground/Pretrained_models/Qwen3.5-0.8B/config.json
-test -d playground/Datasets/calvin/calvin_abc_d_lerobot_v2.1
+test -d "${H200_CALVIN_DATASET_PATH}"
+test -f "${H200_CALVIN_DATASET_PATH}/meta/info.json"
+test -f "${H200_CALVIN_DATASET_PATH}/meta/modality.json"
+test -d "${H200_CALVIN_DATASET_PATH}/data"
 ```
+
+训练要求 `H200_CALVIN_DATASET_PATH` 是 LeRobot 格式目录，必须包含 `meta/info.json`、`meta/modality.json` 和 `data/`。如果这里只包含原始 CALVIN 的 `training/validation/`，不要继续训练，先转换成 LeRobot 格式。
 
 脚本语法检查：
 
@@ -76,6 +85,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
 GPU_LIST="0 1 2 3" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=100 \
 SAVE_INTERVAL=100 \
 EVAL_INTERVAL=1000000 \
@@ -106,6 +118,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
 GPU_LIST="0 1 2 3" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=10000 \
 SAVE_INTERVAL=5000 \
 EVAL_INTERVAL=1000000 \
@@ -127,6 +142,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
 GPU_LIST="0 1 2 3" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=30000 \
 SAVE_INTERVAL=5000 \
 EVAL_INTERVAL=1000000 \
@@ -149,6 +167,9 @@ mkdir -p "${LOG_ROOT}/terminal"
 nohup bash -lc "
   ROUTE_LIST='p0_oft p1_adapter p2_lora_oft p3_lora_adapter' \
   GPU_LIST='0 1 2 3' \
+  H200_CALVIN_DATA_ROOT='${H200_CALVIN_DATA_ROOT}' \
+  H200_CALVIN_DATA_NAME='${H200_CALVIN_DATA_NAME}' \
+  H200_CALVIN_DATA_MIX='${H200_CALVIN_DATA_MIX}' \
   MAX_TRAIN_STEPS=30000 \
   SAVE_INTERVAL=5000 \
   EVAL_INTERVAL=1000000 \
@@ -187,6 +208,10 @@ RUN_ID="h200_${ROUTE}_30000step"
 LOG_DIR="logs/h200_route_train/log_${RUN_TS}_${RUN_ID}"
 
 CUDA_VISIBLE_DEVICES=0 \
+CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
+CONFIG_YAML=examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml \
 ROUTE="${ROUTE}" \
 MAX_TRAIN_STEPS=30000 \
 SAVE_INTERVAL=5000 \
@@ -210,6 +235,10 @@ RUN_ID="h200_${ROUTE}_30000step"
 LOG_DIR="logs/h200_route_train/log_${RUN_TS}_${RUN_ID}"
 
 CUDA_VISIBLE_DEVICES=1 \
+CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
+CONFIG_YAML=examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml \
 ROUTE="${ROUTE}" \
 MAX_TRAIN_STEPS=30000 \
 SAVE_INTERVAL=5000 \
@@ -233,6 +262,10 @@ RUN_ID="h200_${ROUTE}_100step"
 LOG_DIR="logs/h200_route_train/log_${RUN_TS}_${RUN_ID}"
 
 CUDA_VISIBLE_DEVICES=2 \
+CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
+CONFIG_YAML=examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml \
 ROUTE="${ROUTE}" \
 MAX_TRAIN_STEPS=100 \
 SAVE_INTERVAL=100 \
@@ -258,6 +291,10 @@ RUN_ID="h200_${ROUTE}_100step"
 LOG_DIR="logs/h200_route_train/log_${RUN_TS}_${RUN_ID}"
 
 CUDA_VISIBLE_DEVICES=3 \
+CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
+CONFIG_YAML=examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml \
 ROUTE="${ROUTE}" \
 MAX_TRAIN_STEPS=100 \
 SAVE_INTERVAL=100 \
@@ -280,6 +317,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p0_oft p1_adapter" \
 GPU_LIST="4 5" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=30000 \
 SAVE_INTERVAL=5000 \
 DATALOADER_NUM_WORKERS=4 \
@@ -295,6 +335,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p1_adapter p3_lora_adapter" \
 GPU_LIST="2 7" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=10000 \
 SAVE_INTERVAL=5000 \
 DATALOADER_NUM_WORKERS=2 \
@@ -310,6 +353,9 @@ H200_RUN_TS=$(date +"%Y%m%d_%H%M%S")
 
 ROUTE_LIST="p0_oft" \
 GPU_LIST="6" \
+H200_CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+H200_CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+H200_CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
 MAX_TRAIN_STEPS=50000 \
 SAVE_INTERVAL=5000 \
 DATALOADER_NUM_WORKERS=4 \
@@ -384,7 +430,7 @@ export NUM_SEQUENCES=5
 export UNNORM_KEY=franka
 export RUN_ID=h200_eval_debug5_p0_steps30000
 export LOG_DIR=<route_log_dir>/eval_debug5_steps30000
-export DATASET_PATH=/home/lwb/Projects/SII/starVLA_Projects/calvin/dataset/calvin_debug_dataset
+export DATASET_PATH=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/calvin_task_ABC_D
 export CALVIN_CONFIG_PATH=/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf
 
 bash examples/calvin/eval_files/eval_calvin_debug.sh
@@ -419,7 +465,7 @@ export NUM_SEQUENCES=1000
 export UNNORM_KEY=franka
 export RUN_ID=h200_eval_abcd_full_<route>_<step>
 export LOG_DIR=<route_log_dir>/eval_abcd_full_<step>
-export DATASET_PATH=/path/to/calvin/task_ABC_D_or_full_dataset
+export DATASET_PATH=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/calvin_task_ABC_D
 export CALVIN_CONFIG_PATH=/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf
 
 bash examples/calvin/eval_files/eval_calvin_debug.sh

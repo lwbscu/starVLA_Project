@@ -12,11 +12,15 @@ H200_RUN_TS=${H200_RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
 LOG_ROOT=${LOG_ROOT:-logs/h200_route_train/log_${H200_RUN_TS}_qwen35_0p8b_matrix}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
+H200_CALVIN_DATA_ROOT=${H200_CALVIN_DATA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}
+H200_CALVIN_DATA_NAME=${H200_CALVIN_DATA_NAME:-calvin_task_ABC_D}
+H200_CALVIN_DATA_MIX=${H200_CALVIN_DATA_MIX:-calvin_abc_d_h200}
 
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-30000}
 SAVE_INTERVAL=${SAVE_INTERVAL:-5000}
 EVAL_INTERVAL=${EVAL_INTERVAL:-1000000}
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
+CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml}
 
 ROUTE_LIST=${ROUTE_LIST:-"p0_oft p1_adapter p2_lora_oft p3_lora_adapter"}
 GPU_LIST=${GPU_LIST:-"0 1 2 3"}
@@ -47,9 +51,31 @@ log_msg "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
 log_msg "MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS}"
 log_msg "SAVE_INTERVAL=${SAVE_INTERVAL}"
 log_msg "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
+log_msg "CONFIG_YAML=${CONFIG_YAML}"
 log_msg "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
+log_msg "H200_CALVIN_DATA_ROOT=${H200_CALVIN_DATA_ROOT}"
+log_msg "H200_CALVIN_DATA_NAME=${H200_CALVIN_DATA_NAME}"
+log_msg "H200_CALVIN_DATA_MIX=${H200_CALVIN_DATA_MIX}"
 log_msg "ROUTE_LIST=${ROUTE_LIST}"
 log_msg "GPU_LIST=${GPU_LIST}"
+
+H200_CALVIN_DATASET_DIR="${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}"
+if [[ ! -d "${H200_CALVIN_DATASET_DIR}" ]]; then
+  echo "CALVIN H200 LeRobot dataset directory not found: ${H200_CALVIN_DATASET_DIR}" | tee -a "${QUEUE_LOG}" >&2
+  exit 2
+fi
+if [[ ! -f "${H200_CALVIN_DATASET_DIR}/meta/info.json" ]]; then
+  echo "Missing ${H200_CALVIN_DATASET_DIR}/meta/info.json. Training requires LeRobot-format CALVIN data." | tee -a "${QUEUE_LOG}" >&2
+  exit 2
+fi
+if [[ ! -f "${H200_CALVIN_DATASET_DIR}/meta/modality.json" ]]; then
+  echo "Missing ${H200_CALVIN_DATASET_DIR}/meta/modality.json. Copy examples/calvin/train_files/modality.json into the dataset meta directory." | tee -a "${QUEUE_LOG}" >&2
+  exit 2
+fi
+if [[ ! -d "${H200_CALVIN_DATASET_DIR}/data" ]]; then
+  echo "Missing ${H200_CALVIN_DATASET_DIR}/data. Training requires LeRobot parquet data." | tee -a "${QUEUE_LOG}" >&2
+  exit 2
+fi
 
 declare -a PIDS=()
 declare -a NAMES=()
@@ -75,9 +101,13 @@ for idx in "${!ROUTES[@]}"; do
     RUN_TS="${H200_RUN_TS}" \
     RUN_ID="${run_id}" \
     LOG_DIR="${log_dir}" \
+    CONFIG_YAML="${CONFIG_YAML}" \
     ACCELERATE_CONFIG="${ACCELERATE_CONFIG}" \
     STAR_VLA_PYTHON="${STAR_VLA_PYTHON}" \
     DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS}" \
+    CALVIN_DATA_ROOT="${H200_CALVIN_DATA_ROOT}" \
+    CALVIN_DATA_NAME="${H200_CALVIN_DATA_NAME}" \
+    CALVIN_DATA_MIX="${H200_CALVIN_DATA_MIX}" \
     bash examples/calvin/train_files/run_route_validation_train.sh
 
     ckpt_path="${log_dir}/checkpoints/${run_id}/checkpoints/steps_${MAX_TRAIN_STEPS}_pytorch_model.pt"
