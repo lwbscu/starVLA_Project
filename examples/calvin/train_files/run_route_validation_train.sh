@@ -21,6 +21,17 @@ CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
+BASE_VLM=${BASE_VLM:-./playground/Pretrained_models/Qwen3.5-0.8B}
+ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
+OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE:-"[112,112]"}
+ACTION_DIM=${ACTION_DIM:-7}
+ACTION_HORIZON=${ACTION_HORIZON:-8}
+ACTION_QUERY_NUM=${ACTION_QUERY_NUM:-64}
+NUM_ACTIONS_CHUNK=${NUM_ACTIONS_CHUNK:-8}
+ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM:-1024}
+LORA_R=${LORA_R:-16}
+LORA_ALPHA=${LORA_ALPHA:-32}
+LORA_DROPOUT=${LORA_DROPOUT:-0.05}
 CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-}
 CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-}
 CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-}
@@ -48,6 +59,11 @@ fi
 
 if [[ ! -x "${STAR_VLA_PYTHON}" ]]; then
   echo "STAR_VLA_PYTHON is not executable: ${STAR_VLA_PYTHON}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${BASE_VLM}/config.json" ]]; then
+  echo "BASE_VLM does not contain config.json: ${BASE_VLM}" >&2
   exit 2
 fi
 
@@ -84,9 +100,9 @@ COMMON_ARGS=(
   --num_processes "${NUM_PROCESSES}"
   starVLA/training/train_starvla.py
   --config_yaml "${CONFIG_YAML}"
-  --framework.qwenvl.base_vlm ./playground/Pretrained_models/Qwen3.5-0.8B
-  --framework.qwenvl.attn_implementation sdpa
-  --datasets.vla_data.obs_image_size "[112,112]"
+  --framework.qwenvl.base_vlm "${BASE_VLM}"
+  --framework.qwenvl.attn_implementation "${ATTN_IMPLEMENTATION}"
+  --datasets.vla_data.obs_image_size "${OBS_IMAGE_SIZE}"
   --datasets.vla_data.num_workers "${DATALOADER_NUM_WORKERS}"
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}"
   --trainer.save_interval "${SAVE_INTERVAL}"
@@ -107,8 +123,8 @@ case "${ROUTE}" in
     ROUTE_ARGS=(
       --framework.name QwenOFT
       --framework.action_model.action_model_type MLP
-      --framework.action_model.action_dim 7
-      --framework.action_model.action_horizon 8
+      --framework.action_model.action_dim "${ACTION_DIM}"
+      --framework.action_model.action_horizon "${ACTION_HORIZON}"
       --trainer.freeze_modules qwen_vl_interface
     )
     ;;
@@ -116,10 +132,10 @@ case "${ROUTE}" in
     ROUTE_ARGS=(
       --framework.name QwenAdapter
       --framework.action_model.action_model_type VLA_Adapter
-      --framework.action_model.action_query_num 64
-      --framework.action_model.num_actions_chunk 8
-      --framework.action_model.action_dim 7
-      --framework.action_model.hidden_dim 1024
+      --framework.action_model.action_query_num "${ACTION_QUERY_NUM}"
+      --framework.action_model.num_actions_chunk "${NUM_ACTIONS_CHUNK}"
+      --framework.action_model.action_dim "${ACTION_DIM}"
+      --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
       --trainer.freeze_modules qwen_vl_interface
     )
     ;;
@@ -127,28 +143,28 @@ case "${ROUTE}" in
     ROUTE_ARGS=(
       --framework.name QwenOFT
       --framework.action_model.action_model_type MLP
-      --framework.action_model.action_dim 7
-      --framework.action_model.action_horizon 8
+      --framework.action_model.action_dim "${ACTION_DIM}"
+      --framework.action_model.action_horizon "${ACTION_HORIZON}"
       --trainer.freeze_modules qwen_vl_interface
       --trainer.lora.enabled true
-      --trainer.lora.r 16
-      --trainer.lora.alpha 32
-      --trainer.lora.dropout 0.05
+      --trainer.lora.r "${LORA_R}"
+      --trainer.lora.alpha "${LORA_ALPHA}"
+      --trainer.lora.dropout "${LORA_DROPOUT}"
     )
     ;;
   p3_lora_adapter)
     ROUTE_ARGS=(
       --framework.name QwenAdapter
       --framework.action_model.action_model_type VLA_Adapter
-      --framework.action_model.action_query_num 64
-      --framework.action_model.num_actions_chunk 8
-      --framework.action_model.action_dim 7
-      --framework.action_model.hidden_dim 1024
+      --framework.action_model.action_query_num "${ACTION_QUERY_NUM}"
+      --framework.action_model.num_actions_chunk "${NUM_ACTIONS_CHUNK}"
+      --framework.action_model.action_dim "${ACTION_DIM}"
+      --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
       --trainer.freeze_modules qwen_vl_interface
       --trainer.lora.enabled true
-      --trainer.lora.r 16
-      --trainer.lora.alpha 32
-      --trainer.lora.dropout 0.05
+      --trainer.lora.r "${LORA_R}"
+      --trainer.lora.alpha "${LORA_ALPHA}"
+      --trainer.lora.dropout "${LORA_DROPOUT}"
     )
     ;;
   *)
@@ -169,6 +185,17 @@ set +e
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
   echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
+  echo "BASE_VLM=${BASE_VLM}"
+  echo "ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
+  echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
+  echo "ACTION_DIM=${ACTION_DIM}"
+  echo "ACTION_HORIZON=${ACTION_HORIZON}"
+  echo "ACTION_QUERY_NUM=${ACTION_QUERY_NUM}"
+  echo "NUM_ACTIONS_CHUNK=${NUM_ACTIONS_CHUNK}"
+  echo "ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM}"
+  echo "LORA_R=${LORA_R}"
+  echo "LORA_ALPHA=${LORA_ALPHA}"
+  echo "LORA_DROPOUT=${LORA_DROPOUT}"
   echo "CALVIN_DATA_SOURCE=${CALVIN_DATA_SOURCE}"
   echo "CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-<config_yaml>}"
   echo "CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-<config_yaml>}"
