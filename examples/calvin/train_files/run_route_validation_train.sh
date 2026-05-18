@@ -11,6 +11,7 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 ROUTE=${ROUTE:-p0_oft}
 NUM_PROCESSES=${NUM_PROCESSES:-1}
+MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-${ACCELERATE_MAIN_PROCESS_PORT:-${MASTER_PORT:-29500}}}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-1}
 SAVE_INTERVAL=${SAVE_INTERVAL:-${MAX_TRAIN_STEPS}}
 EVAL_INTERVAL=${EVAL_INTERVAL:-1000}
@@ -60,6 +61,11 @@ if ! [[ "${NUM_PROCESSES}" =~ ^[0-9]+$ ]] || (( NUM_PROCESSES < 1 )); then
   exit 2
 fi
 
+if ! [[ "${MAIN_PROCESS_PORT}" =~ ^[0-9]+$ ]] || (( MAIN_PROCESS_PORT < 1 || MAIN_PROCESS_PORT > 65535 )); then
+  echo "MAIN_PROCESS_PORT must be an integer in [1, 65535], got: ${MAIN_PROCESS_PORT}" >&2
+  exit 2
+fi
+
 if [[ ! -x "${STAR_VLA_PYTHON}" ]]; then
   echo "STAR_VLA_PYTHON is not executable: ${STAR_VLA_PYTHON}" >&2
   exit 2
@@ -101,6 +107,7 @@ cp "${ACCELERATE_CONFIG}" "${LOG_DIR}/configs/"
 COMMON_ARGS=(
   --config_file "${ACCELERATE_CONFIG}"
   --num_processes "${NUM_PROCESSES}"
+  --main_process_port "${MAIN_PROCESS_PORT}"
   starVLA/training/train_starvla.py
   --config_yaml "${CONFIG_YAML}"
   --framework.qwenvl.base_vlm "${BASE_VLM}"
@@ -196,6 +203,7 @@ set +e
   echo "LOG_DIR=${LOG_DIR}"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
   echo "NUM_PROCESSES=${NUM_PROCESSES}"
+  echo "MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT}"
   echo "MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS}"
   echo "SAVE_INTERVAL=${SAVE_INTERVAL}"
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
@@ -228,6 +236,30 @@ print("Qwen3.5 import OK")
 PY
   then
     echo "Qwen3.5 import failed. Install a Qwen3.5-compatible transformers version in STAR_VLA_PYTHON's conda environment before training." >&2
+    exit 2
+  fi
+
+  if ! MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT}" "${STAR_VLA_PYTHON}" - <<'PY'
+import os
+import socket
+import sys
+
+port = int(os.environ["MAIN_PROCESS_PORT"])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind(("0.0.0.0", port))
+except OSError as exc:
+    print(
+        f"MAIN_PROCESS_PORT={port} is unavailable before accelerate launch: {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+finally:
+    sock.close()
+print(f"MAIN_PROCESS_PORT={port} is available")
+PY
+  then
+    echo "Choose a free MAIN_PROCESS_PORT for this training route." >&2
     exit 2
   fi
 

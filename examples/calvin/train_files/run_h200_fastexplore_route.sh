@@ -18,6 +18,7 @@ export LOG_ROOT=${LOG_ROOT:-logs/h200_fastexplore}
 export ROUTE=${ROUTE:?Set ROUTE, e.g. p0_oft}
 export TRAIN_GPUS=${TRAIN_GPUS:-0,1,2,3,4,5,6,7}
 export NUM_PROCESSES=${NUM_PROCESSES:-8}
+export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29600}
 export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-16}
 export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml}
 export ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
@@ -142,6 +143,26 @@ if [[ "${EVAL_ENABLED}" == "1" ]]; then
     echo "EVAL_SEQUENCES_PATH not found: ${EVAL_SEQUENCES_PATH}" >&2
     exit 2
   fi
+  if ! "${CALVIN_PYTHON}" - <<'PY'
+import sys
+
+try:
+    import cv2
+except ImportError as exc:
+    print(
+        "CALVIN_PYTHON cannot import cv2. Fix the calvin env before running eval "
+        "(for example: pip uninstall -y opencv-python opencv-contrib-python "
+        "opencv-python-headless opencv-contrib-python-headless && "
+        "pip install opencv-python-headless==4.11.0.86).",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+
+print(f"cv2 import OK: {cv2.__version__}")
+PY
+  then
+    exit 2
+  fi
 fi
 
 "${STAR_VLA_PYTHON}" - <<'PY'
@@ -157,6 +178,7 @@ echo "PIPELINE_TS=${PIPELINE_TS}"
 echo "ROUTE=${ROUTE}"
 echo "TRAIN_GPUS=${TRAIN_GPUS}"
 echo "NUM_PROCESSES=${NUM_PROCESSES}"
+echo "MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT}"
 echo "BASE_VLM=${BASE_VLM}"
 echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
 echo "LOG_ROOT=${LOG_ROOT}"
@@ -276,6 +298,7 @@ run_stage() {
   echo "===== START stage=${stage_name} route=${ROUTE} steps=${steps} ====="
   CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}" \
   NUM_PROCESSES="${NUM_PROCESSES}" \
+  MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT}" \
   BASE_VLM="${BASE_VLM}" \
   OBS_IMAGE_SIZE="${OBS_IMAGE_SIZE}" \
   ACTION_HORIZON="${ACTION_HORIZON}" \

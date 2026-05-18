@@ -96,6 +96,7 @@ test -f "${H200_CALVIN_EVAL_DATASET_PATH}/training/.hydra/merged_config.yaml"
 test -d "${CALVIN_CONFIG_PATH}"
 test -f "${EVAL_SEQUENCES_PATH}"
 test -x "${CALVIN_PYTHON}"
+"${CALVIN_PYTHON}" -c "import cv2; print('cv2 import OK', cv2.__version__)"
 
 nvidia-smi
 ```
@@ -104,6 +105,21 @@ P4 需要 4B 权重：
 
 ```bash
 test -f playground/Pretrained_models/Qwen3.5-4B/config.json
+```
+
+如果 `cv2` 报 `ImportError: libGL.so.1`，先修 `calvin` 环境再跑训练。评测必须产出 mp4，所以这里不能跳过：
+
+```bash
+cd "${PROJECT_ROOT}"
+export PATH="${CONDA_ROOT}/bin:${PATH}"
+source "${CONDA_ROOT}/etc/profile.d/conda.sh"
+conda activate calvin
+
+pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless opencv-contrib-python-headless
+pip install "opencv-python-headless==4.11.0.86"
+
+python -c "import cv2; print('cv2 import OK', cv2.__version__)"
+conda activate "${STARVLA_ENV}"
 ```
 
 ## 3. 先测试已有 P0 30k 权重
@@ -191,6 +207,15 @@ find logs/h200_route_train/p0_30k_d_env_eval3 -type f \( -name "results.json" -o
 
 正式跑之前，先用极短步数完整验证链路：训练、保存 checkpoint、reload、启动 server、D 环境 eval、输出 mp4。
 
+注意两个端口不是一回事：
+
+```text
+MAIN_PROCESS_PORT: accelerate / deepspeed 分布式训练 rendezvous 端口。
+EVAL_PORT: policy server 推理评测端口。
+```
+
+Server-1 同时跑 P0 和 P4，必须给两条训练路线不同的 `MAIN_PROCESS_PORT`。否则会出现 `EADDRINUSE: address already in use`。
+
 ### Server-1 快速测试 P0 + P4
 
 ```bash
@@ -210,8 +235,10 @@ export DECISION_EVAL_SEQUENCES=1
 
 export P0_GPUS=0,1,2,3
 export P0_NUM_PROCESSES=4
+export P0_MAIN_PROCESS_PORT=29600
 export P4_GPUS=4,5,6,7
 export P4_NUM_PROCESSES=4
+export P4_MAIN_PROCESS_PORT=29610
 export P4_BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
 export P0_EVAL_PORT=5694
 export P4_EVAL_PORT=5695
@@ -240,6 +267,7 @@ export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
@@ -265,6 +293,7 @@ export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
@@ -290,6 +319,7 @@ export DECISION_EVAL_SEQUENCES=1
 
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
@@ -337,8 +367,10 @@ conda activate "${STARVLA_ENV}"
 export LOG_ROOT=logs/h200_fastexplore
 export P0_GPUS=0,1,2,3
 export P0_NUM_PROCESSES=4
+export P0_MAIN_PROCESS_PORT=29600
 export P4_GPUS=4,5,6,7
 export P4_NUM_PROCESSES=4
+export P4_MAIN_PROCESS_PORT=29610
 export P4_BASE_VLM=./playground/Pretrained_models/Qwen3.5-4B
 export P0_EVAL_PORT=5694
 export P4_EVAL_PORT=5695
@@ -357,6 +389,7 @@ conda activate "${STARVLA_ENV}"
 export LOG_ROOT=logs/h200_fastexplore
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
@@ -372,6 +405,7 @@ conda activate "${STARVLA_ENV}"
 export LOG_ROOT=logs/h200_fastexplore
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
@@ -387,6 +421,7 @@ conda activate "${STARVLA_ENV}"
 export LOG_ROOT=logs/h200_fastexplore
 export TRAIN_GPUS=0,1,2,3,4,5,6,7
 export NUM_PROCESSES=8
+export MAIN_PROCESS_PORT=29600
 export EVAL_PORT=5694
 export EVAL_GPU=0
 
