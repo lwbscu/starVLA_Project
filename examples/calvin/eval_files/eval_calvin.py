@@ -15,6 +15,8 @@ Usage:
         --args.num_sequences 1000
 """
 
+from __future__ import annotations
+
 import copy
 import dataclasses
 import json
@@ -119,40 +121,126 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _patch_calvin_scene_data_path(cfg) -> None:
-    """Resolve CALVIN scene assets to an absolute path before PyBullet loads URDFs."""
-    data_path = OmegaConf.select(cfg, "env.scene_cfg.data_path") or OmegaConf.select(cfg, "scene.data_path")
-    if data_path is None:
-        return
+def _is_calvin_asset_root(candidate: Path) -> bool:
+    required_any = [
+        candidate / "plane" / "plane.urdf",
+        candidate / "franka_panda" / "panda_longer_finger.urdf",
+        candidate / "calvin_table_D" / "urdf" / "calvin_table_D.urdf",
+    ]
+    return any(path.is_file() for path in required_any)
 
-    data_path = Path(str(data_path))
-    if data_path.is_absolute():
-        return
+
+def _calvin_asset_root_candidates(data_path: Path | None) -> list[Path]:
+    candidates: list[Path] = []
+
+    if os.environ.get("CALVIN_ASSET_ROOT"):
+        candidates.append(Path(os.environ["CALVIN_ASSET_ROOT"]))
+
+    if data_path is not None and data_path.is_absolute():
+        candidates.append(data_path)
 
     try:
         import calvin_env
     except ImportError:
-        return
+        calvin_pkg = None
+    else:
+        calvin_pkg = Path(calvin_env.__file__).resolve()
 
-    calvin_pkg = Path(calvin_env.__file__).resolve()
-    candidates = [
-        calvin_pkg.parents[1] / data_path,
-        calvin_pkg.parents[2] / data_path,
-        Path.cwd() / data_path,
-    ]
-    asset_root = next((candidate for candidate in candidates if (candidate / "plane" / "plane.urdf").is_file()), None)
-    if asset_root is None:
-        logger.warning(
-            "Could not resolve CALVIN scene data_path=%s. candidates=%s",
-            data_path,
-            [str(candidate) for candidate in candidates],
+    if calvin_pkg is not None:
+        candidates.extend(
+            [
+                calvin_pkg.parents[1] / "data",
+                calvin_pkg.parents[2] / "data",
+            ]
         )
-        return
+        if data_path is not None and not data_path.is_absolute():
+            candidates.extend(
+                [
+                    calvin_pkg.parents[1] / data_path,
+                    calvin_pkg.parents[2] / data_path,
+                ]
+            )
+
+    project_root = Path(os.environ.get("PROJECT_ROOT", Path.cwd())).resolve()
+    candidates.extend(
+        [
+            project_root / "calvin" / "calvin_env" / "data",
+            project_root / "calvin" / "calvin_env" / "calvin_env" / "data",
+        ]
+    )
+    if data_path is not None and not data_path.is_absolute():
+        candidates.append(Path.cwd() / data_path)
+
+    unique_candidates: list[Path] = []
+    seen = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser()
+        key = str(resolved)
+        if key not in seen:
+            unique_candidates.append(resolved)
+            seen.add(key)
+    return unique_candidates
+
+
+def _select_resolved(cfg, cfg_path: str):
+    value = OmegaConf.select(cfg, cfg_path)
+    if value is None:
+        return None
+    if OmegaConf.is_config(value):
+        return OmegaConf.to_container(value, resolve=True)
+    return value
+
+
+def _patch_calvin_scene_data_path(cfg) -> Path:
+    """Resolve CALVIN scene assets to an absolute path before PyBullet loads URDFs."""
+    data_path = OmegaConf.select(cfg, "env.scene_cfg.data_path") or OmegaConf.select(cfg, "scene.data_path")
+    data_path = Path(str(data_path)) if data_path is not None else None
+    candidates = _calvin_asset_root_candidates(data_path)
+    asset_root = next((candidate for candidate in candidates if _is_calvin_asset_root(candidate)), None)
+    if asset_root is None:
+        raise FileNotFoundError(
+            "Could not resolve CALVIN asset root. Expected one of the candidates to contain "
+            "plane/plane.urdf, franka_panda/panda_longer_finger.urdf, or "
+            "calvin_table_D/urdf/calvin_table_D.urdf. "
+            f"data_path={data_path}; candidates={[str(candidate) for candidate in candidates]}"
+        )
 
     for cfg_path in ("env.scene_cfg.data_path", "scene.data_path", "data_path"):
         if OmegaConf.select(cfg, cfg_path) is not None:
             OmegaConf.update(cfg, cfg_path, str(asset_root), merge=True)
     logger.info("Resolved CALVIN scene data_path to %s", asset_root)
+    return asset_root
+
+
+def _patch_calvin_env_references(cfg, asset_root: Path) -> None:
+    """Resolve Hydra references and CALVIN URDF paths that direct env construction needs."""
+    scene_mappings = {
+        "env.robot_cfg.base_position": "scene.robot_base_position",
+        "env.robot_cfg.base_orientation": "scene.robot_base_orientation",
+        "env.robot_cfg.initial_joint_positions": "scene.robot_initial_joint_positions",
+        "env.scene_cfg.robot_base_position": "scene.robot_base_position",
+        "env.scene_cfg.robot_base_orientation": "scene.robot_base_orientation",
+        "env.scene_cfg.robot_initial_joint_positions": "scene.robot_initial_joint_positions",
+    }
+    for target_path, source_path in scene_mappings.items():
+        if OmegaConf.select(cfg, target_path) is None:
+            continue
+        source_value = _select_resolved(cfg, source_path)
+        if source_value is not None:
+            OmegaConf.update(cfg, target_path, copy.deepcopy(source_value), merge=True)
+
+    robot_filename = OmegaConf.select(cfg, "env.robot_cfg.filename")
+    if robot_filename:
+        robot_path = Path(str(robot_filename))
+        if not robot_path.is_absolute():
+            robot_path = asset_root / robot_path
+        if not robot_path.is_file():
+            raise FileNotFoundError(
+                "CALVIN robot URDF not found after resolving asset root: "
+                f"{robot_path}. asset_root={asset_root}; original_filename={robot_filename}"
+            )
+        OmegaConf.update(cfg, "env.robot_cfg.filename", str(robot_path), merge=True)
+        logger.info("Resolved CALVIN robot URDF to %s", robot_path)
 
 
 def _instantiate_calvin_env_direct(cfg, instantiate_kwargs: dict):
@@ -161,17 +249,19 @@ def _instantiate_calvin_env_direct(cfg, instantiate_kwargs: dict):
     if not target_path:
         raise ValueError("CALVIN env config is missing env._target_")
 
-    env_kwargs = {key: cfg.env[key] for key in cfg.env.keys() if key not in {"_target_", "_recursive_"}}
+    env_config = OmegaConf.to_container(cfg.env, resolve=True)
+    env_kwargs = {key: env_config[key] for key in env_config.keys() if key not in {"_target_", "_recursive_"}}
     env_kwargs.update(instantiate_kwargs)
     target_cls = hydra.utils.get_class(str(target_path))
     try:
         return target_cls(**env_kwargs)
     except Exception:
         logger.exception(
-            "Direct CALVIN env construction failed. target=%s use_egl=%s scene_data_path=%s",
+            "Direct CALVIN env construction failed. target=%s use_egl=%s scene_data_path=%s robot_urdf=%s",
             target_path,
             env_kwargs.get("use_egl"),
             OmegaConf.select(cfg, "env.scene_cfg.data_path"),
+            OmegaConf.select(cfg, "env.robot_cfg.filename"),
         )
         raise
 
@@ -315,7 +405,8 @@ def make_env(dataset_path: str):
     config_path = val_folder / ".hydra" / "merged_config.yaml"
     cfg = OmegaConf.load(config_path)
     force_no_egl = _env_flag("CALVIN_FORCE_NO_EGL", "1")
-    _patch_calvin_scene_data_path(cfg)
+    asset_root = _patch_calvin_scene_data_path(cfg)
+    _patch_calvin_env_references(cfg, asset_root)
 
     # Remove tactile sensor from camera list if it exists
     if hasattr(cfg.env, "cameras") and "tactile" in cfg.env.cameras:
