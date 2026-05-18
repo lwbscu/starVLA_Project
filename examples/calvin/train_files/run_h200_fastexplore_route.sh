@@ -32,6 +32,18 @@ export LORA_DROPOUT=${LORA_DROPOUT:-0.05}
 export PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS:-4}
 export PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS:-2}
 export PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS:-32}
+export EVAL_ENABLED=${EVAL_ENABLED:-1}
+export EVAL_HOST=${EVAL_HOST:-127.0.0.1}
+export EVAL_PORT=${EVAL_PORT:-5694}
+export EVAL_GPU=${EVAL_GPU:-${TRAIN_GPUS%%,*}}
+export EVAL_UNNORM_KEY=${EVAL_UNNORM_KEY:-franka}
+export SMOKE_EVAL_SEQUENCES=${SMOKE_EVAL_SEQUENCES:-1}
+export FAST_EVAL_SEQUENCES=${FAST_EVAL_SEQUENCES:-3}
+export DECISION_EVAL_SEQUENCES=${DECISION_EVAL_SEQUENCES:-5}
+export POLICY_SERVER_START_TIMEOUT=${POLICY_SERVER_START_TIMEOUT:-600}
+export CALVIN_PYTHON=${CALVIN_PYTHON:-"${CONDA_ROOT}/envs/calvin/bin/python"}
+export CALVIN_CONFIG_PATH=${CALVIN_CONFIG_PATH:-"${PROJECT_ROOT}/calvin/calvin_models/conf"}
+export EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
 
 mkdir -p "${LOG_ROOT}/terminal" "${LOG_ROOT}/summary"
 
@@ -72,6 +84,50 @@ if [[ ! -d "${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}" ]]; then
   exit 2
 fi
 
+resolve_eval_dataset() {
+  if [[ -n "${H200_CALVIN_EVAL_DATASET_PATH:-}" ]]; then
+    echo "${H200_CALVIN_EVAL_DATASET_PATH}"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset" \
+    "${PROJECT_ROOT}/calvin/dataset/task_ABC_D" \
+    "${PROJECT_ROOT}/calvin/dataset/calvin_task_ABC_D" \
+    "${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}"
+  do
+    if [[ -d "${candidate}/validation" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "No CALVIN eval dataset with validation/ found. Set H200_CALVIN_EVAL_DATASET_PATH explicitly." >&2
+  return 2
+}
+
+if [[ "${EVAL_ENABLED}" == "1" ]]; then
+  H200_CALVIN_EVAL_DATASET_PATH=$(resolve_eval_dataset)
+  export H200_CALVIN_EVAL_DATASET_PATH
+  if [[ ! -d "${H200_CALVIN_EVAL_DATASET_PATH}/validation" ]]; then
+    echo "Eval dataset must contain validation/: ${H200_CALVIN_EVAL_DATASET_PATH}" >&2
+    exit 2
+  fi
+  if [[ ! -x "${CALVIN_PYTHON}" ]]; then
+    echo "CALVIN_PYTHON is not executable: ${CALVIN_PYTHON}" >&2
+    exit 2
+  fi
+  if [[ ! -d "${CALVIN_CONFIG_PATH}" ]]; then
+    echo "CALVIN_CONFIG_PATH not found: ${CALVIN_CONFIG_PATH}" >&2
+    exit 2
+  fi
+  if [[ ! -f "${EVAL_SEQUENCES_PATH}" ]]; then
+    echo "EVAL_SEQUENCES_PATH not found: ${EVAL_SEQUENCES_PATH}" >&2
+    exit 2
+  fi
+fi
+
 "${STAR_VLA_PYTHON}" - <<'PY'
 from transformers import Qwen3_5ForConditionalGeneration
 print("Qwen3.5 import OK")
@@ -88,12 +144,112 @@ echo "NUM_PROCESSES=${NUM_PROCESSES}"
 echo "BASE_VLM=${BASE_VLM}"
 echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
 echo "LOG_ROOT=${LOG_ROOT}"
+echo "EVAL_ENABLED=${EVAL_ENABLED}"
+echo "EVAL_PORT=${EVAL_PORT}"
+echo "EVAL_GPU=${EVAL_GPU}"
+echo "H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-<disabled>}"
+
+wait_for_policy_server() {
+  local server_pid=$1
+  local server_log=$2
+  local timeout=$3
+  local waited=0
+
+  while [[ "${waited}" -lt "${timeout}" ]]; do
+    if [[ -f "${server_log}" ]] && grep -q "server running" "${server_log}"; then
+      return 0
+    fi
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+      echo "Policy server exited before ready. Log: ${server_log}" >&2
+      wait "${server_pid}" || true
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  echo "Policy server did not become ready within ${timeout}s. Log: ${server_log}" >&2
+  return 1
+}
+
+run_eval_stage() {
+  local stage_name=$1
+  local steps=$2
+  local log_dir=$3
+  local ckpt_path=$4
+  local num_sequences=$5
+  local server_dir="${log_dir}/server_${stage_name}"
+  local eval_dir="${log_dir}/eval_${stage_name}_${num_sequences}seq"
+  local server_log="${server_dir}/terminal/policy_server.log"
+  local server_pid
+  local eval_status
+  local mp4_count
+  local result_file
+
+  echo "===== START eval stage=${stage_name} route=${ROUTE} steps=${steps} num_sequences=${num_sequences} ====="
+  mkdir -p "${server_dir}" "${eval_dir}"
+
+  CKPT_PATH="${ckpt_path}" \
+  PORT="${EVAL_PORT}" \
+  RUN_TS="${PIPELINE_TS}" \
+  RUN_ID="server_${stage_name}_${ROUTE}_${steps}step" \
+  LOG_DIR="${server_dir}" \
+  CUDA_VISIBLE_DEVICES="${EVAL_GPU}" \
+  STAR_VLA_PYTHON="${STAR_VLA_PYTHON}" \
+  bash examples/calvin/eval_files/run_policy_server_debug.sh &
+  server_pid=$!
+
+  if ! wait_for_policy_server "${server_pid}" "${server_log}" "${POLICY_SERVER_START_TIMEOUT}"; then
+    kill "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" 2>/dev/null || true
+    return 1
+  fi
+
+  set +e
+  CKPT_PATH="${ckpt_path}" \
+  HOST="${EVAL_HOST}" \
+  PORT="${EVAL_PORT}" \
+  NUM_SEQUENCES="${num_sequences}" \
+  UNNORM_KEY="${EVAL_UNNORM_KEY}" \
+  RUN_TS="${PIPELINE_TS}" \
+  RUN_ID="eval_${stage_name}_${ROUTE}_${steps}step" \
+  LOG_DIR="${eval_dir}" \
+  DATASET_PATH="${H200_CALVIN_EVAL_DATASET_PATH}" \
+  CALVIN_CONFIG_PATH="${CALVIN_CONFIG_PATH}" \
+  EVAL_SEQUENCES_PATH="${EVAL_SEQUENCES_PATH}" \
+  CALVIN_PYTHON="${CALVIN_PYTHON}" \
+  bash examples/calvin/eval_files/eval_calvin_debug.sh
+  eval_status=$?
+  kill "${server_pid}" 2>/dev/null || true
+  wait "${server_pid}" 2>/dev/null || true
+  set -e
+
+  if [[ "${eval_status}" -ne 0 ]]; then
+    echo "Eval failed for stage=${stage_name}. See ${eval_dir}/terminal/eval.log" >&2
+    return "${eval_status}"
+  fi
+
+  result_file=$(find "${eval_dir}" -type f -name "results.json" -print -quit)
+  if [[ -z "${result_file}" ]]; then
+    echo "Eval finished but results.json was not produced under ${eval_dir}" >&2
+    return 3
+  fi
+
+  mp4_count=$(find "${eval_dir}" -type f -name "*.mp4" | wc -l | tr -d " ")
+  if [[ "${mp4_count}" -lt 1 ]]; then
+    echo "Eval finished but no mp4 was produced under ${eval_dir}" >&2
+    return 3
+  fi
+
+  echo "===== DONE eval stage=${stage_name} route=${ROUTE} results=${result_file} mp4_count=${mp4_count} ====="
+}
 
 run_stage() {
   local stage_name=$1
   local steps=$2
   local save_interval=$3
   local workers=$4
+  local eval_sequences=$5
   local run_id="${stage_name}_${ROUTE}_${steps}step"
   local log_dir="${LOG_ROOT}/${PIPELINE_TS}_${run_id}"
   local ckpt_path="${log_dir}/checkpoints/${run_id}/checkpoints/steps_${steps}_pytorch_model.pt"
@@ -137,11 +293,15 @@ run_stage() {
     --expected-unnorm-key franka \
     --output-json "${log_dir}/metrics/reload_check_steps_${steps}.json"
 
+  if [[ "${EVAL_ENABLED}" == "1" ]]; then
+    run_eval_stage "${stage_name}" "${steps}" "${log_dir}" "${ckpt_path}" "${eval_sequences}"
+  fi
+
   echo "===== DONE stage=${stage_name} route=${ROUTE} ckpt=${ckpt_path} ====="
 }
 
-run_stage smoke1k 1000 1000 "${SMOKE_WORKERS:-8}"
-run_stage fast10k 10000 5000 "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}"
-run_stage decision30k 30000 10000 "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}"
+run_stage smoke1k 1000 1000 "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
+run_stage fast10k 10000 5000 "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
+run_stage decision30k 30000 10000 "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${DECISION_EVAL_SEQUENCES}"
 
 echo "PIPELINE_DONE route=${ROUTE} log=${PIPELINE_LOG}"

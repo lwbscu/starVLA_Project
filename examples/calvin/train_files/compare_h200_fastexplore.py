@@ -56,6 +56,11 @@ def best_eval(log_dir: Path) -> tuple[float | None, str]:
     return best_score, best_path
 
 
+def mp4_summary(log_dir: Path) -> tuple[int, str]:
+    mp4_files = sorted(log_dir.rglob("*.mp4"))
+    return len(mp4_files), str(mp4_files[0]) if mp4_files else ""
+
+
 def collect(log_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for train_log in sorted(log_root.rglob("terminal/train.log")):
@@ -68,6 +73,7 @@ def collect(log_root: Path) -> list[dict[str, Any]]:
         reload_json = read_json(reload_files[-1]) if reload_files else None
         ckpts = sorted(log_dir.rglob("steps_*_pytorch_model.pt"))
         eval_score, eval_path = best_eval(log_dir)
+        mp4_count, first_mp4 = mp4_summary(log_dir)
         loss_passed = loss_json.get("passed")
         reload_passed = reload_json.get("passed") if reload_json else None
         last_loss = loss_json.get("last_loss")
@@ -75,12 +81,18 @@ def collect(log_root: Path) -> list[dict[str, Any]]:
         median_ratio = loss_json.get("median_ratio")
 
         stage_score = steps
+        if eval_score is not None:
+            stage_score += 100000 + eval_score * 1000
+        else:
+            stage_score -= 50000
+        if mp4_count > 0:
+            stage_score += 10000
+        else:
+            stage_score -= 10000
         if loss_passed is True:
             stage_score += 100
         if reload_passed is True:
             stage_score += 100
-        if eval_score is not None:
-            stage_score += 1000 + eval_score * 100
         if not ckpts:
             stage_score -= 10000
         if loss_passed is False or reload_passed is False:
@@ -104,6 +116,8 @@ def collect(log_root: Path) -> list[dict[str, Any]]:
                 "reload_passed": reload_passed,
                 "eval_avg_seq_len": eval_score,
                 "eval_results": eval_path,
+                "mp4_count": mp4_count,
+                "first_mp4": first_mp4,
                 "num_checkpoints": len(ckpts),
                 "latest_checkpoint": str(ckpts[-1]) if ckpts else "",
                 "log_dir": str(log_dir),
@@ -127,12 +141,14 @@ def write_outputs(rows: list[dict[str, Any]], output_dir: Path) -> None:
         "median_ratio",
         "reload_passed",
         "eval_avg_seq_len",
+        "mp4_count",
         "num_checkpoints",
         "base_vlm",
         "gpus",
         "num_processes",
         "latest_checkpoint",
         "eval_results",
+        "first_mp4",
         "log_dir",
         "score",
     ]
@@ -165,6 +181,20 @@ def write_outputs(rows: list[dict[str, Any]], output_dir: Path) -> None:
             f"{'' if eval_value is None else eval_value} | "
             f"{'' if row['last_loss'] is None else row['last_loss']} | "
             f"{row['num_checkpoints']} | `{row['log_dir']}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## MP4 可视化",
+            "",
+            "| Route | Stage | Steps | MP4 Count | First MP4 | Eval Results |",
+            "| --- | --- | ---: | ---: | --- | --- |",
+        ]
+    )
+    for row in ranking:
+        lines.append(
+            f"| {row['route']} | {row['stage']} | {row['steps']} | "
+            f"{row['mp4_count']} | `{row['first_mp4']}` | `{row['eval_results']}` |"
         )
     lines.extend(["", f"CSV: `{csv_path}`", ""])
     md_path.write_text("\n".join(lines), encoding="utf-8")
