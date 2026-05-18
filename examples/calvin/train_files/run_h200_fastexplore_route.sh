@@ -150,10 +150,11 @@ try:
     import cv2
 except ImportError as exc:
     print(
-        "CALVIN_PYTHON cannot import cv2. Fix the calvin env before running eval "
-        "(for example: pip uninstall -y opencv-python opencv-contrib-python "
+        f"CALVIN_PYTHON={sys.executable} cannot import cv2: {exc}. "
+        "Fix the calvin env before running eval. For example: "
+        f"{sys.executable} -m pip uninstall -y opencv-python opencv-contrib-python "
         "opencv-python-headless opencv-contrib-python-headless && "
-        "pip install opencv-python-headless==4.11.0.86).",
+        f"{sys.executable} -m pip install opencv-python-headless==4.11.0.86",
         file=sys.stderr,
     )
     raise SystemExit(2) from exc

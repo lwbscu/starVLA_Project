@@ -113,12 +113,12 @@ test -f playground/Pretrained_models/Qwen3.5-4B/config.json
 cd "${PROJECT_ROOT}"
 export PATH="${CONDA_ROOT}/bin:${PATH}"
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate calvin
 
-pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless opencv-contrib-python-headless
-pip install "opencv-python-headless==4.11.0.86"
+"${CONDA_ROOT}/envs/calvin/bin/python" -m pip uninstall -y \
+  opencv-python opencv-contrib-python opencv-python-headless opencv-contrib-python-headless
+"${CONDA_ROOT}/envs/calvin/bin/python" -m pip install "opencv-python-headless==4.11.0.86"
 
-python -c "import cv2; print('cv2 import OK', cv2.__version__)"
+"${CONDA_ROOT}/envs/calvin/bin/python" -c "import cv2; print('cv2 import OK', cv2.__version__)"
 conda activate "${STARVLA_ENV}"
 ```
 

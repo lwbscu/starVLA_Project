@@ -33,8 +33,15 @@ print_failure_context() {
     echo "missing launch log: ${launch_log}" >&2
   fi
 
-  echo "pipeline logs:" >&2
-  find "${LOG_ROOT}/terminal" -maxdepth 1 -type f -name "*${route}_pipeline.log" -print -exec tail -n 120 {} \; >&2 || true
+  local pipeline_log="${LOG_ROOT}/terminal/${PIPELINE_TS}_${route}_pipeline.log"
+  echo "current_pipeline_log=${pipeline_log}" >&2
+  if [[ -f "${pipeline_log}" ]]; then
+    tail -n 120 "${pipeline_log}" >&2 || true
+  else
+    echo "current pipeline log was not created; failure happened before route pipeline logging started." >&2
+  fi
+
+  echo "older pipeline logs for ${route} are not tailed here to avoid mixing stale errors." >&2
   echo "----- end ${route} failure context -----" >&2
 }
 
