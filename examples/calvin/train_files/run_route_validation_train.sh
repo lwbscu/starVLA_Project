@@ -10,6 +10,7 @@ export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:Tr
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 ROUTE=${ROUTE:-p0_oft}
+NUM_PROCESSES=${NUM_PROCESSES:-1}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-1}
 SAVE_INTERVAL=${SAVE_INTERVAL:-${MAX_TRAIN_STEPS}}
 EVAL_INTERVAL=${EVAL_INTERVAL:-1000}
@@ -23,6 +24,16 @@ DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
 CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-}
 CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-}
 CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-}
+
+if ! [[ "${NUM_PROCESSES}" =~ ^[0-9]+$ ]] || (( NUM_PROCESSES < 1 )); then
+  echo "NUM_PROCESSES must be a positive integer, got: ${NUM_PROCESSES}" >&2
+  exit 2
+fi
+
+if [[ ! -x "${STAR_VLA_PYTHON}" ]]; then
+  echo "STAR_VLA_PYTHON is not executable: ${STAR_VLA_PYTHON}" >&2
+  exit 2
+fi
 
 if [[ -n "${CALVIN_DATA_ROOT}" || -n "${CALVIN_DATA_MIX}" || -n "${CALVIN_DATA_NAME}" ]]; then
   : "${CALVIN_DATA_ROOT:?Set CALVIN_DATA_ROOT when overriding CALVIN data}"
@@ -54,7 +65,7 @@ cp "${ACCELERATE_CONFIG}" "${LOG_DIR}/configs/"
 
 COMMON_ARGS=(
   --config_file "${ACCELERATE_CONFIG}"
-  --num_processes 1
+  --num_processes "${NUM_PROCESSES}"
   starVLA/training/train_starvla.py
   --config_yaml "${CONFIG_YAML}"
   --framework.qwenvl.base_vlm ./playground/Pretrained_models/Qwen3.5-0.8B
@@ -136,6 +147,7 @@ set +e
   echo "RUN_ID=${RUN_ID}"
   echo "LOG_DIR=${LOG_DIR}"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+  echo "NUM_PROCESSES=${NUM_PROCESSES}"
   echo "MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS}"
   echo "SAVE_INTERVAL=${SAVE_INTERVAL}"
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
@@ -144,6 +156,17 @@ set +e
   echo "CALVIN_DATA_ROOT=${CALVIN_DATA_ROOT:-<config_yaml>}"
   echo "CALVIN_DATA_MIX=${CALVIN_DATA_MIX:-<config_yaml>}"
   echo "CALVIN_DATA_NAME=${CALVIN_DATA_NAME:-<registry>}"
+
+  if ! "${STAR_VLA_PYTHON}" - <<'PY'
+import transformers
+print(f"transformers={transformers.__version__}")
+from transformers import Qwen3_5ForConditionalGeneration
+print("Qwen3.5 import OK")
+PY
+  then
+    echo "Qwen3.5 import failed. Install a Qwen3.5-compatible transformers version in STAR_VLA_PYTHON's conda environment before training." >&2
+    exit 2
+  fi
 
   "${STAR_VLA_PYTHON}" -m accelerate.commands.launch "${COMMON_ARGS[@]}" "${ROUTE_ARGS[@]}"
 } 2>&1 | tee "${LOG_DIR}/terminal/train.log"
