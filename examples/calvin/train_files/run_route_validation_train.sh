@@ -259,6 +259,7 @@ finally:
 print(f"MAIN_PROCESS_PORT={port} is available")
 PY
   then
+    "${STAR_VLA_PYTHON}" examples/calvin/train_files/describe_port_users.py "${MAIN_PROCESS_PORT}" >&2 || true
     echo "Choose a free MAIN_PROCESS_PORT for this training route." >&2
     exit 2
   fi

@@ -23,6 +23,26 @@ mkdir -p "${LOG_ROOT}/terminal"
 p0_launch_log="${LOG_ROOT}/terminal/${PIPELINE_TS}_server1_p0_oft.launch.log"
 p4_launch_log="${LOG_ROOT}/terminal/${PIPELINE_TS}_server1_p4_pi.launch.log"
 
+require_distinct_ports() {
+  local names=(P0_MAIN_PROCESS_PORT P4_MAIN_PROCESS_PORT P0_EVAL_PORT P4_EVAL_PORT)
+  local values=("${P0_MAIN_PROCESS_PORT}" "${P4_MAIN_PROCESS_PORT}" "${P0_EVAL_PORT}" "${P4_EVAL_PORT}")
+  local i
+  local j
+
+  for i in "${!values[@]}"; do
+    if ! [[ "${values[$i]}" =~ ^[0-9]+$ ]] || (( values[$i] < 1 || values[$i] > 65535 )); then
+      echo "${names[$i]} must be an integer in [1, 65535], got: ${values[$i]}" >&2
+      exit 2
+    fi
+    for ((j = i + 1; j < ${#values[@]}; j++)); do
+      if [[ "${values[$i]}" == "${values[$j]}" ]]; then
+        echo "${names[$i]} and ${names[$j]} must be different, both are ${values[$i]}" >&2
+        exit 2
+      fi
+    done
+  done
+}
+
 print_failure_context() {
   local route=$1
   local launch_log=$2
@@ -45,6 +65,8 @@ print_failure_context() {
   echo "older pipeline logs for ${route} are not tailed here to avoid mixing stale errors." >&2
   echo "----- end ${route} failure context -----" >&2
 }
+
+require_distinct_ports
 
 (
   ROUTE=p0_oft \

@@ -261,17 +261,28 @@ export H200_QWEN35_9B="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-9B"
 export BASE_VLM="${H200_QWEN35_9B}"
 ```
 
-如果上一次 eval 失败后 5694/5695 仍被旧 policy server 占用，新的脚本会在加载模型前直接报错。重新测试时优先换一组干净端口：
+如果上一次 eval 失败后端口仍被旧 policy server 或旧 accelerate 进程占用，脚本会直接报错并打印占用 PID/命令。重新测试时优先换一组干净端口：
 
 ```bash
-export P0_EVAL_PORT=5794
-export P4_EVAL_PORT=5795
+export P0_MAIN_PROCESS_PORT=30600
+export P4_MAIN_PROCESS_PORT=30610
+export P0_EVAL_PORT=6094
+export P4_EVAL_PORT=6095
+```
+
+需要定位旧进程时，用训练环境 Python 查看端口占用：
+
+```bash
+"${STAR_VLA_PYTHON}" examples/calvin/train_files/describe_port_users.py 29600 29610 5894 5895 6094 6095
 ```
 
 ### Server-1 快速测试 P0 + P4
 
 ```bash
 cd "${PROJECT_ROOT}"
+export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
+export PATH="${CONDA_ROOT}/bin:${PATH}"
+source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${STARVLA_ENV}"
 
 export LOG_ROOT=logs/h200_fastexplore_test
@@ -287,13 +298,13 @@ export DECISION_EVAL_SEQUENCES=1
 
 export P0_GPUS=0,1,2,3
 export P0_NUM_PROCESSES=4
-export P0_MAIN_PROCESS_PORT=29600
+export P0_MAIN_PROCESS_PORT=30600
 export P4_GPUS=4,5,6,7
 export P4_NUM_PROCESSES=4
-export P4_MAIN_PROCESS_PORT=29610
+export P4_MAIN_PROCESS_PORT=30610
 export P4_BASE_VLM="${H200_QWEN35_9B}"
-export P0_EVAL_PORT=5794
-export P4_EVAL_PORT=5795
+export P0_EVAL_PORT=6094
+export P4_EVAL_PORT=6095
 export P0_EVAL_GPU=0
 export P4_EVAL_GPU=4
 

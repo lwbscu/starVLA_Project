@@ -214,7 +214,9 @@ echo "DECISION_STEPS=${DECISION_STEPS}"
 
 ensure_eval_port_free() {
   local port=$1
+  local status
 
+  set +e
   EVAL_PORT_TO_CHECK="${port}" "${STAR_VLA_PYTHON}" - <<'PY'
 import os
 import socket
@@ -236,6 +238,12 @@ finally:
 
 print(f"EVAL_PORT={port} is available before policy server launch")
 PY
+  status=$?
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    "${STAR_VLA_PYTHON}" examples/calvin/train_files/describe_port_users.py "${port}" >&2 || true
+  fi
+  return "${status}"
 }
 
 wait_for_policy_server() {
@@ -400,6 +408,10 @@ run_stage() {
 
   echo "===== DONE stage=${stage_name} route=${ROUTE} ckpt=${ckpt_path} ====="
 }
+
+if [[ "${EVAL_ENABLED}" == "1" ]]; then
+  ensure_eval_port_free "${EVAL_PORT}"
+fi
 
 run_stage smoke1k "${SMOKE_STEPS}" "${SMOKE_SAVE_INTERVAL}" "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
 run_stage fast10k "${FAST_STEPS}" "${FAST_SAVE_INTERVAL}" "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
