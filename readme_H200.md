@@ -7,7 +7,7 @@
 ```bash
 export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
 export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
-export STARVLA_ENV=starVLA
+export STARVLA_ENV=starVLA_qwen35
 export CALVIN_ENV=calvin
 
 export PATH="${CONDA_ROOT}/bin:${PATH}"
@@ -79,6 +79,21 @@ ls "${H200_CALVIN_DATASET_PATH}/meta"
 ```
 
 ## 3. GPU 参数写法
+
+执行第 0 节公共环境后，下面短命令会自动使用服务器数据集：
+
+```text
+/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/calvin_task_ABC_D
+```
+
+训练日志开头应显示：
+
+```text
+CALVIN_DATA_SOURCE=auto_h200
+CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
+CALVIN_DATA_MIX=calvin_abc_d_h200
+CALVIN_DATA_NAME=calvin_task_ABC_D
+```
 
 单路线使用 1 张 GPU：
 
