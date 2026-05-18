@@ -30,6 +30,8 @@ P3: p3_lora_adapter     Qwen3.5 + LoRA + Adapter
 P4: p4_qwen4b_pi        Qwen3.5-4B + PI / Flow-Matching
 ```
 
+本地单独 smoke / 短训 PI（不跑五路线流水线）见：[examples/calvin/train_files/README_qwen35_pi_train.md](examples/calvin/train_files/README_qwen35_pi_train.md)。
+
 默认正式节奏：
 
 ```text

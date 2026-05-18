@@ -20,7 +20,11 @@ export TRAIN_GPUS=${TRAIN_GPUS:-0,1,2,3,4,5,6,7}
 export NUM_PROCESSES=${NUM_PROCESSES:-8}
 export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29600}
 export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-16}
-export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml}
+if [[ "${ROUTE}" == "p4_qwen4b_pi" || "${ROUTE}" == "p4_pi" ]]; then
+  export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_pi_h200.yaml}
+else
+  export CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_h200.yaml}
+fi
 export ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 export OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE:-"[224,224]"}
 export ACTION_HORIZON=${ACTION_HORIZON:-8}

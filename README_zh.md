@@ -176,6 +176,8 @@ bash examples/calvin/train_files/run_calvin_qwen25_smoke.sh
 
 ## 10. Qwen3.5-OFT 本地训练 Smoke
 
+> Qwen3.5 + **QwenPI**（LayerwiseFM）对称说明见：[examples/calvin/train_files/README_qwen35_pi_train.md](examples/calvin/train_files/README_qwen35_pi_train.md)。
+
 1 step：
 
 ```bash
