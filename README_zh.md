@@ -413,6 +413,17 @@ ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
 bash examples/calvin/train_files/run_route_h200_matrix.sh
 ```
 
+默认 `DATALOADER_NUM_WORKERS=0`，用于避免训练结束后 dataloader worker 清理卡住队列。H200 上如果确认单路线能自然退出，可以显式增大：
+
+```bash
+DATALOADER_NUM_WORKERS=4 \
+MAX_TRAIN_STEPS=100 \
+SAVE_INTERVAL=100 \
+GPU_LIST="0 1 2 3" \
+ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
+bash examples/calvin/train_files/run_route_h200_matrix.sh
+```
+
 输出目录：
 
 ```text
@@ -440,6 +451,7 @@ cd /home/lwb/Projects/SII/starVLA_Projects/starVLA_Project
 
 MAX_TRAIN_STEPS=30000 \
 SAVE_INTERVAL=5000 \
+DATALOADER_NUM_WORKERS=0 \
 GPU_LIST="0 1 2 3" \
 ROUTE_LIST="p0_oft p1_adapter p2_lora_oft p3_lora_adapter" \
 bash examples/calvin/train_files/run_route_h200_matrix.sh

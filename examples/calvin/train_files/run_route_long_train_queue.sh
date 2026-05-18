@@ -12,6 +12,7 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 LONG_RUN_TS=${LONG_RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
 LOG_ROOT=${LOG_ROOT:-logs/route_long_train/log_${LONG_RUN_TS}_qwen35_0p8b_p0_p3}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
+DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
 
 STEPS_P0=${STEPS_P0:-10000}
 STEPS_P1=${STEPS_P1:-10000}
@@ -76,6 +77,7 @@ run_one() {
   LOG_DIR="${log_dir}" \
   ACCELERATE_CONFIG="${accelerate_config}" \
   STAR_VLA_PYTHON="${STAR_VLA_PYTHON}" \
+  DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS}" \
   bash examples/calvin/train_files/run_route_validation_train.sh
 
   check_reload "${route}" "${run_id}" "${steps}" "${log_dir}"
@@ -85,6 +87,7 @@ run_one() {
 log_msg "queue root: ${LOG_ROOT}"
 log_msg "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
 log_msg "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+log_msg "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
 log_msg "routes: p0_oft=${STEPS_P0}, p1_adapter=${STEPS_P1}, p2_lora_oft=${STEPS_P2}, p3_lora_adapter=${STEPS_P3}"
 
 run_one p0_oft "${STEPS_P0}" "${ACCELERATE_NO_OFFLOAD}"

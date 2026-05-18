@@ -19,6 +19,7 @@ LOG_DIR=${LOG_DIR:-logs/route_validation/log_${RUN_TS}_${RUN_ID}}
 CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_smoke.yaml}
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
+DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
 
 mkdir -p "${LOG_DIR}"/{train,eval,terminal,mp4,configs,metrics,checkpoints}
 cp "${CONFIG_YAML}" "${LOG_DIR}/configs/"
@@ -33,6 +34,7 @@ COMMON_ARGS=(
   --framework.qwenvl.base_vlm ./playground/Pretrained_models/Qwen3.5-0.8B
   --framework.qwenvl.attn_implementation sdpa
   --datasets.vla_data.obs_image_size "[112,112]"
+  --datasets.vla_data.num_workers "${DATALOADER_NUM_WORKERS}"
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}"
   --trainer.save_interval "${SAVE_INTERVAL}"
   --trainer.eval_interval "${EVAL_INTERVAL}"
@@ -105,6 +107,7 @@ set +e
   echo "SAVE_INTERVAL=${SAVE_INTERVAL}"
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
+  echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
 
   "${STAR_VLA_PYTHON}" -m accelerate.commands.launch "${COMMON_ARGS[@]}" "${ROUTE_ARGS[@]}"
 } 2>&1 | tee "${LOG_DIR}/terminal/train.log"

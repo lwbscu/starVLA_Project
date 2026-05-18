@@ -11,6 +11,7 @@ export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:Tr
 H200_RUN_TS=${H200_RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
 LOG_ROOT=${LOG_ROOT:-logs/h200_route_train/log_${H200_RUN_TS}_qwen35_0p8b_matrix}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
+DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
 
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-30000}
 SAVE_INTERVAL=${SAVE_INTERVAL:-5000}
@@ -46,6 +47,7 @@ log_msg "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
 log_msg "MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS}"
 log_msg "SAVE_INTERVAL=${SAVE_INTERVAL}"
 log_msg "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
+log_msg "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
 log_msg "ROUTE_LIST=${ROUTE_LIST}"
 log_msg "GPU_LIST=${GPU_LIST}"
 
@@ -75,6 +77,7 @@ for idx in "${!ROUTES[@]}"; do
     LOG_DIR="${log_dir}" \
     ACCELERATE_CONFIG="${ACCELERATE_CONFIG}" \
     STAR_VLA_PYTHON="${STAR_VLA_PYTHON}" \
+    DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS}" \
     bash examples/calvin/train_files/run_route_validation_train.sh
 
     ckpt_path="${log_dir}/checkpoints/${run_id}/checkpoints/steps_${MAX_TRAIN_STEPS}_pytorch_model.pt"
