@@ -52,6 +52,29 @@ export CALVIN_PYTHON=${CALVIN_PYTHON:-"${CONDA_ROOT}/envs/calvin/bin/python"}
 export CALVIN_CONFIG_PATH=${CALVIN_CONFIG_PATH:-"${PROJECT_ROOT}/calvin/calvin_models/conf"}
 export EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
 
+resolve_git_executable() {
+  local candidate
+
+  if [[ -n "${GIT_PYTHON_GIT_EXECUTABLE:-}" ]]; then
+    if [[ -x "${GIT_PYTHON_GIT_EXECUTABLE}" ]]; then
+      echo "${GIT_PYTHON_GIT_EXECUTABLE}"
+      return 0
+    fi
+    echo "GIT_PYTHON_GIT_EXECUTABLE is set but not executable: ${GIT_PYTHON_GIT_EXECUTABLE}" >&2
+    return 2
+  fi
+
+  for candidate in "$(command -v git 2>/dev/null || true)" /usr/bin/git /bin/git; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "No git executable found. Install git or set GIT_PYTHON_GIT_EXECUTABLE=/path/to/git before CALVIN eval." >&2
+  return 2
+}
+
 mkdir -p "${LOG_ROOT}/terminal" "${LOG_ROOT}/summary"
 
 select_largest_qwen35() {
@@ -143,7 +166,10 @@ if [[ "${EVAL_ENABLED}" == "1" ]]; then
     echo "EVAL_SEQUENCES_PATH not found: ${EVAL_SEQUENCES_PATH}" >&2
     exit 2
   fi
+  GIT_PYTHON_GIT_EXECUTABLE=$(resolve_git_executable)
+  export GIT_PYTHON_GIT_EXECUTABLE
   if ! "${CALVIN_PYTHON}" - <<'PY'
+import os
 import sys
 
 try:
@@ -160,6 +186,16 @@ except ImportError as exc:
     raise SystemExit(2) from exc
 
 print(f"cv2 import OK: {cv2.__version__}")
+try:
+    import git
+except ImportError as exc:
+    print(
+        f"CALVIN_PYTHON={sys.executable} cannot import GitPython with "
+        f"GIT_PYTHON_GIT_EXECUTABLE={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE')}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+print(f"GitPython import OK: git={os.environ.get('GIT_PYTHON_GIT_EXECUTABLE')}")
 PY
   then
     exit 2
@@ -186,6 +222,7 @@ echo "LOG_ROOT=${LOG_ROOT}"
 echo "EVAL_ENABLED=${EVAL_ENABLED}"
 echo "EVAL_PORT=${EVAL_PORT}"
 echo "EVAL_GPU=${EVAL_GPU}"
+echo "GIT_PYTHON_GIT_EXECUTABLE=${GIT_PYTHON_GIT_EXECUTABLE:-<disabled>}"
 echo "H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-<disabled>}"
 echo "SMOKE_STEPS=${SMOKE_STEPS}"
 echo "FAST_STEPS=${FAST_STEPS}"
@@ -260,6 +297,7 @@ run_eval_stage() {
   CALVIN_CONFIG_PATH="${CALVIN_CONFIG_PATH}" \
   EVAL_SEQUENCES_PATH="${EVAL_SEQUENCES_PATH}" \
   CALVIN_PYTHON="${CALVIN_PYTHON}" \
+  GIT_PYTHON_GIT_EXECUTABLE="${GIT_PYTHON_GIT_EXECUTABLE}" \
   bash examples/calvin/eval_files/eval_calvin_debug.sh
   eval_status=$?
   kill "${server_pid}" 2>/dev/null || true

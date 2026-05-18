@@ -66,6 +66,8 @@ export H200_CALVIN_EVAL_DATASET_PATH="${H200_CALVIN_DATA_ROOT}/task_D_D"
 export CALVIN_CONFIG_PATH="${PROJECT_ROOT}/calvin/calvin_models/conf"
 export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
 export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
+export GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git
+test -x "${GIT_PYTHON_GIT_EXECUTABLE}" || export GIT_PYTHON_GIT_EXECUTABLE="$(command -v git)"
 
 export LOG_ROOT=logs/h200_fastexplore
 export OBS_IMAGE_SIZE='[224,224]'
@@ -96,7 +98,9 @@ test -f "${H200_CALVIN_EVAL_DATASET_PATH}/training/.hydra/merged_config.yaml"
 test -d "${CALVIN_CONFIG_PATH}"
 test -f "${EVAL_SEQUENCES_PATH}"
 test -x "${CALVIN_PYTHON}"
+test -x "${GIT_PYTHON_GIT_EXECUTABLE}"
 "${CALVIN_PYTHON}" -c "import cv2; print('cv2 import OK', cv2.__version__)"
+"${CALVIN_PYTHON}" -c "import os, git; print('GitPython import OK', os.environ.get('GIT_PYTHON_GIT_EXECUTABLE'))"
 
 nvidia-smi
 ```
@@ -205,6 +209,8 @@ export CKPT_PATH=$(find logs/h200_route_train/log_20260518_151413_h200_p0_oft_30
   -type f -name "steps_30000_pytorch_model.pt" | sort | tail -n 1)
 export HOST=127.0.0.1
 export PORT=5694
+export GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git
+test -x "${GIT_PYTHON_GIT_EXECUTABLE}" || export GIT_PYTHON_GIT_EXECUTABLE="$(command -v git)"
 export NUM_SEQUENCES=3
 export UNNORM_KEY=franka
 export RUN_ID=p0_30k_d_env_eval3
