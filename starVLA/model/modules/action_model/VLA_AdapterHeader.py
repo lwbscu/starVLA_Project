@@ -10,6 +10,16 @@ import torch
 import torch.nn as nn
 
 
+def _as_positive_int(name, value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return parsed
+
+
 class VLA_Adapter_L1RegressionActionHead(nn.Module):
     """Simple MLP-based action head that generates continuous actions via L1 regression."""
 
@@ -20,11 +30,14 @@ class VLA_Adapter_L1RegressionActionHead(nn.Module):
         super().__init__()
         self.config = full_config
 
-        input_dim = full_config.framework.qwenvl.vl_hidden_dim
-        hidden_dim = full_config.framework.action_model.hidden_dim
-        action_dim = full_config.framework.action_model.action_dim
+        input_dim = _as_positive_int("framework.qwenvl.vl_hidden_dim", full_config.framework.qwenvl.vl_hidden_dim)
+        hidden_dim = _as_positive_int("framework.action_model.hidden_dim", full_config.framework.action_model.hidden_dim)
+        action_dim = _as_positive_int("framework.action_model.action_dim", full_config.framework.action_model.action_dim)
 
-        self.action_query_num = full_config.framework.action_model.get("action_query_num", 64)
+        self.action_query_num = _as_positive_int(
+            "framework.action_model.action_query_num",
+            full_config.framework.action_model.get("action_query_num", 64),
+        )
         use_pro_version = full_config.framework.action_model.use_pro_version
 
         self.action_dim = action_dim
@@ -33,6 +46,14 @@ class VLA_Adapter_L1RegressionActionHead(nn.Module):
         self.num_actions_chunk = self.config.framework.action_model.get("num_actions_chunk", None)
         if self.num_actions_chunk is None:
             raise ValueError("num_actions_chunk must be specified in action_model config.")
+        self.num_actions_chunk = _as_positive_int("framework.action_model.num_actions_chunk", self.num_actions_chunk)
+
+        if hidden_dim != input_dim:
+            raise ValueError(
+                "framework.action_model.hidden_dim must match framework.qwenvl.vl_hidden_dim "
+                f"for VLA_Adapter. Got hidden_dim={hidden_dim}, vl_hidden_dim={input_dim}. "
+                "Set ADAPTER_HIDDEN_DIM=auto or use the current Qwen model hidden size."
+            )
 
         # Learnable action chunk embeddings (like positional embeddings)
         # Applied during both training and inference
