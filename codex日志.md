@@ -886,3 +886,14 @@
 
 结果如何：
 修改 `examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`，eval dataset 自动发现现在优先选择 `/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/task_D_D`。验证通过：`bash -n examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`bash -n examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`、`git diff --check`。注意：该 eval 是 D 环境快速可视化/smoke 验证，不等同于官方 ABC-D validation；如果以后有正式 validation 目录，应通过 `H200_CALVIN_EVAL_DATASET_PATH` 显式指定。
+
+## 2026-05-19 19:25
+
+问题是什么：
+用户要求生成 `H200_批量测试命令行.md`，用于在 H200 上统一批量评测当前两套训练产物：四路线混合训练结果和 server1 PI state 训练结果，并要求能处理 CALVIN 环境依赖、mp4 可视化和 rollout 后训练调试输出。
+
+解决思路：
+读取现有两个统一 eval 脚本 `examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`，以及 `docs/datasets_anlazy.md` 中的训练/eval 数据边界。新文档按可执行顺序组织：同步代码、初始化环境、公共 eval 变量、CALVIN 依赖检查、四路线混合批量评测、PI state 批量评测、开启 rollout LeRobot/mp4 输出、只测部分模型、多终端并行、失败排查和高标准验收。
+
+结果如何：
+新增 `H200_批量测试命令行.md`。文档明确训练数据 `calvin_task_ABC_D` 与快速仿真 eval 数据 `task_D_D` 的区别，给出两套批量脚本的完整命令，并保留 `REQUIRE_MP4=1`、依赖检查、端口清理和 `SEND_STATE_TO_POLICY=1` 等关键安全项。验证执行 `git diff --check -- H200_批量测试命令行.md` 通过；本轮未实际在 H200 上运行 CALVIN eval。

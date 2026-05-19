@@ -226,6 +226,7 @@ MUJOCO_LOG.TXT
 examples/MultiRobot/*
 
 AGENTS.md
+codex日志.md
 
 # Local-only CALVIN / StarVLA reproduction artifacts
 logs/
