@@ -24,6 +24,7 @@
 - `FREEZE_MODULES=qwen_vl_interface,action_model`：LoRA 注入后脚本会自动移除顶层 `qwen_vl_interface` 冻结，保留 `action_model` 冻结，所以可训练参数只应是 LoRA。
 - `LORA_FAIL_IF_NO_TARGET_MODULES=true`：如果 ViT/LLM 前缀没有匹配到 Linear 模块，直接失败，不允许静默退化。
 - 默认使用 `INCLUDE_STATE=true`、`STATE_DIM=8`、`PI_STATE_DIM=8`，保持和 PI-State action head 一致。
+- 当前 9B PI-State 源权重使用已确认存在的 `steps_25000_pytorch_model.pt`；做结果表时要标注 9B 继承源为 25k。
 
 ## 0. 公共启动块
 
@@ -55,11 +56,15 @@ test -d "${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAME}/data"
 export PIHEAD_SOURCE_ROOT="${PROJECT_ROOT}/logs/20260519_h200_server1_pi_state_30k_v1/server1_pi_state"
 export PIHEAD_CKPT_0P8B="${PIHEAD_SOURCE_ROOT}/qwen35_0p8b/pi_state_qwen35_0p8b_30000step/checkpoints/pi_state_qwen35_0p8b_30000step/checkpoints/steps_30000_pytorch_model.pt"
 export PIHEAD_CKPT_4B="${PIHEAD_SOURCE_ROOT}/qwen35_4b/pi_state_qwen35_4b_30000step/checkpoints/pi_state_qwen35_4b_30000step/checkpoints/steps_30000_pytorch_model.pt"
-export PIHEAD_CKPT_9B="${PIHEAD_SOURCE_ROOT}/qwen35_9b/pi_state_qwen35_9b_30000step/checkpoints/pi_state_qwen35_9b_30000step/checkpoints/steps_30000_pytorch_model.pt"
+export PIHEAD_CKPT_9B="${PIHEAD_SOURCE_ROOT}/qwen35_9b/pi_state_qwen35_9b_30000step/checkpoints/pi_state_qwen35_9b_30000step/checkpoints/steps_25000_pytorch_model.pt"
 
 test -f "${PIHEAD_CKPT_0P8B}"
 test -f "${PIHEAD_CKPT_4B}"
 test -f "${PIHEAD_CKPT_9B}"
+
+# 如果之后补齐 9B steps_30000，可手动覆盖 PIHEAD_CKPT_9B 并在结果表中同步修改继承源 step。
+# 不建议自动降级，否则 E4/E5/E6 与 PI-State baseline 不可公平对齐。
+# find "${PROJECT_ROOT}/logs" -path "*pi_state*qwen35_9b*steps_*_pytorch_model.pt" -print | sort -V
 
 export ACCELERATE_CONFIG=starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml
 export CONFIG_YAML=examples/calvin/train_files/starvla_train_calvin_qwen35_pi_h200.yaml
@@ -97,6 +102,7 @@ export LORA_R=32
 export LORA_ALPHA=64
 export LORA_DROPOUT=0.05
 export LORA_FAIL_IF_NO_TARGET_MODULES=true
+export LORA_TARGET_EXCLUDE_PREFIXES=
 
 # 冻结 action head，只训练 QwenVL LoRA。
 export FREEZE_MODULES=qwen_vl_interface,action_model
@@ -161,6 +167,7 @@ launch_pihead_lora_size() {
     echo "freeze_modules=${FREEZE_MODULES}"
     echo "lora_target_modules=${LORA_TARGET_MODULES}"
     echo "lora_target_include_prefixes=${LORA_TARGET_INCLUDE_PREFIXES}"
+    echo "lora_target_exclude_prefixes=${LORA_TARGET_EXCLUDE_PREFIXES:-<none>}"
     echo "cuda_visible_devices=${gpus}"
     echo "num_processes=${num_processes}"
     echo "main_process_port=${main_process_port}"
@@ -189,6 +196,7 @@ launch_pihead_lora_size() {
     LORA_DROPOUT="${LORA_DROPOUT}" \
     LORA_TARGET_MODULES="${LORA_TARGET_MODULES}" \
     LORA_TARGET_INCLUDE_PREFIXES="${LORA_TARGET_INCLUDE_PREFIXES}" \
+    LORA_TARGET_EXCLUDE_PREFIXES="${LORA_TARGET_EXCLUDE_PREFIXES:-}" \
     LORA_FAIL_IF_NO_TARGET_MODULES="${LORA_FAIL_IF_NO_TARGET_MODULES}" \
     INCLUDE_STATE="${INCLUDE_STATE}" \
     STATE_DIM="${STATE_DIM}" \
@@ -225,6 +233,15 @@ launch_three_sizes_for_pihead_lora() {
   H200_PIHEAD_LORA_PIDS=()
   H200_PIHEAD_LORA_NAMES=()
   H200_PIHEAD_LORA_LOG_DIRS=()
+
+  local missing=0
+  test -f "${PIHEAD_CKPT_0P8B}" || { echo "missing PI head checkpoint for qwen35_0p8b: ${PIHEAD_CKPT_0P8B}" >&2; missing=1; }
+  test -f "${PIHEAD_CKPT_4B}" || { echo "missing PI head checkpoint for qwen35_4b: ${PIHEAD_CKPT_4B}" >&2; missing=1; }
+  test -f "${PIHEAD_CKPT_9B}" || { echo "missing PI head checkpoint for qwen35_9b: ${PIHEAD_CKPT_9B}" >&2; missing=1; }
+  if [[ "${missing}" -ne 0 ]]; then
+    echo "Abort before launch: all three PI-State source checkpoints are required." >&2
+    return 2
+  fi
 
   launch_pihead_lora_size qwen35_0p8b "${QWEN35_0P8B}" "${PIHEAD_CKPT_0P8B}" 0 1 "${PORT_0P8B}" "${PER_DEVICE_BATCH_SIZE_0P8B}"
   launch_pihead_lora_size qwen35_4b "${QWEN35_4B}" "${PIHEAD_CKPT_4B}" 1,2 2 "${PORT_4B}" "${PER_DEVICE_BATCH_SIZE_4B}"
@@ -264,8 +281,9 @@ export PORT_0P8B=34100
 export PORT_4B=34110
 export PORT_9B=34120
 
-export LORA_TARGET_INCLUDE_PREFIXES=visual
-export LORA_TARGET_MODULES=qkv,proj,fc1,fc2,q_proj,k_proj,v_proj,o_proj
+export LORA_TARGET_INCLUDE_PREFIXES=model.visual
+export LORA_TARGET_EXCLUDE_PREFIXES=
+export LORA_TARGET_MODULES=qkv,proj,linear_fc1,linear_fc2
 
 launch_three_sizes_for_pihead_lora
 ```
@@ -287,6 +305,7 @@ export PORT_4B=34210
 export PORT_9B=34220
 
 export LORA_TARGET_INCLUDE_PREFIXES=model
+export LORA_TARGET_EXCLUDE_PREFIXES=model.visual
 export LORA_TARGET_MODULES=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
 
 launch_three_sizes_for_pihead_lora
@@ -308,8 +327,9 @@ export PORT_0P8B=34300
 export PORT_4B=34310
 export PORT_9B=34320
 
-export LORA_TARGET_INCLUDE_PREFIXES=visual,model
-export LORA_TARGET_MODULES=qkv,proj,fc1,fc2,q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+export LORA_TARGET_INCLUDE_PREFIXES=model
+export LORA_TARGET_EXCLUDE_PREFIXES=
+export LORA_TARGET_MODULES=qkv,proj,linear_fc1,linear_fc2,q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
 
 launch_three_sizes_for_pihead_lora
 ```
@@ -321,7 +341,7 @@ launch_three_sizes_for_pihead_lora
 ```text
 ✅ Resolved LoRA target modules: ...
 ✅ LoRA enabled on qwen_vl_interface.model
-📦 loading checkpoint: ...steps_30000_pytorch_model.pt
+📦 loading checkpoint: ...steps_30000_pytorch_model.pt  # 9B 当前为 steps_25000_pytorch_model.pt
 ✅ parameters loaded to module 'action_model'
 FREEZE_MODULES=qwen_vl_interface,action_model
 RELOAD_MODULES=action_model
