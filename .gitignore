@@ -260,6 +260,10 @@ AGENTS.md
 !examples/**/README.md
 
 # Whitelist specific docs that should be tracked
+!examples/calvin/**/*.md
+!codex日志.md
+!readme_H200.md
+!H200_批量训练命令行.md
 !.github/PULL_REQUEST_TEMPLATE.md
 !docs/branching_strategy.md
 !docs/PR_readme.md
