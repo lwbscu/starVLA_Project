@@ -33,6 +33,10 @@ ACTION_HORIZON=${ACTION_HORIZON:-8}
 ACTION_QUERY_NUM=${ACTION_QUERY_NUM:-64}
 NUM_ACTIONS_CHUNK=${NUM_ACTIONS_CHUNK:-8}
 ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM:-auto}
+INCLUDE_STATE=${INCLUDE_STATE:-false}
+STATE_DIM=${STATE_DIM:-8}
+ADAPTER_USE_PROPRIO=${ADAPTER_USE_PROPRIO:-false}
+PI_STATE_DIM=${PI_STATE_DIM:-}
 LORA_R=${LORA_R:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
@@ -46,6 +50,26 @@ H200_DEFAULT_CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/i
 H200_DEFAULT_CALVIN_DATA_NAME=calvin_task_ABC_D
 H200_DEFAULT_CALVIN_DATA_MIX=calvin_abc_d_h200
 CALVIN_DATA_SOURCE=config_yaml
+
+normalize_bool_value() {
+  local name=$1
+  local value=$2
+  case "${value}" in
+    true|True|TRUE|1|yes|Yes|YES|on|On|ON)
+      echo true
+      ;;
+    false|False|FALSE|0|no|No|NO|off|Off|OFF)
+      echo false
+      ;;
+    *)
+      echo "${name} must be a boolean value, got: ${value}" >&2
+      return 2
+      ;;
+  esac
+}
+
+INCLUDE_STATE="$(normalize_bool_value INCLUDE_STATE "${INCLUDE_STATE}")" || exit 2
+ADAPTER_USE_PROPRIO="$(normalize_bool_value ADAPTER_USE_PROPRIO "${ADAPTER_USE_PROPRIO}")" || exit 2
 
 if [[ -z "${CALVIN_DATA_ROOT}" && -z "${CALVIN_DATA_MIX}" && -z "${CALVIN_DATA_NAME}" ]]; then
   H200_CANDIDATE_ROOT=${H200_CALVIN_DATA_ROOT:-${H200_DEFAULT_CALVIN_DATA_ROOT}}
@@ -119,6 +143,31 @@ if ! [[ "${ADAPTER_HIDDEN_DIM}" =~ ^[0-9]+$ ]] || (( ADAPTER_HIDDEN_DIM < 1 )); 
   exit 2
 fi
 
+if ! [[ "${STATE_DIM}" =~ ^[0-9]+$ ]] || (( STATE_DIM < 1 )); then
+  echo "STATE_DIM must be a positive integer, got: ${STATE_DIM}" >&2
+  exit 2
+fi
+
+if [[ -n "${PI_STATE_DIM}" ]]; then
+  if ! [[ "${PI_STATE_DIM}" =~ ^[0-9]+$ ]] || (( PI_STATE_DIM < 1 )); then
+    echo "PI_STATE_DIM must be empty or a positive integer, got: ${PI_STATE_DIM}" >&2
+    exit 2
+  fi
+fi
+
+if [[ "${ADAPTER_USE_PROPRIO}" == "true" && "${INCLUDE_STATE}" != "true" ]]; then
+  echo "ADAPTER_USE_PROPRIO=true requires INCLUDE_STATE=true; refusing to launch a proprio adapter without state data." >&2
+  exit 2
+fi
+
+if [[ -n "${PI_STATE_DIM}" ]]; then
+  PI_EFFECTIVE_STATE_DIM="${PI_STATE_DIM}"
+elif [[ "${INCLUDE_STATE}" == "true" ]]; then
+  PI_EFFECTIVE_STATE_DIM="${STATE_DIM}"
+else
+  PI_EFFECTIVE_STATE_DIM="${ACTION_DIM}"
+fi
+
 if [[ "${ROUTE}" == "p1_adapter" || "${ROUTE}" == "p3_lora_adapter" ]]; then
   if [[ "${ADAPTER_HIDDEN_DIM}" != "${QWEN_VL_HIDDEN_DIM}" ]]; then
     echo "Adapter routes require ADAPTER_HIDDEN_DIM to match BASE_VLM hidden size." >&2
@@ -152,6 +201,28 @@ if [[ -n "${CALVIN_DATA_ROOT}" || -n "${CALVIN_DATA_MIX}" || -n "${CALVIN_DATA_N
     echo "Missing ${CALVIN_DATASET_DIR}/data. Training requires LeRobot parquet data." >&2
     exit 2
   fi
+  if [[ "${INCLUDE_STATE}" == "true" ]]; then
+    "${STAR_VLA_PYTHON}" - "${CALVIN_DATASET_DIR}/meta/info.json" "${STATE_DIM}" <<'PY'
+import json
+import sys
+
+info_path = sys.argv[1]
+expected_dim = int(sys.argv[2])
+with open(info_path, "r", encoding="utf-8") as f:
+    info = json.load(f)
+
+state_feature = info.get("features", {}).get("state")
+if not isinstance(state_feature, dict):
+    raise SystemExit(f"INCLUDE_STATE=true but meta/info.json has no features.state: {info_path}")
+
+shape = state_feature.get("shape")
+if not isinstance(shape, list) or not shape or int(shape[0]) != expected_dim:
+    raise SystemExit(
+        f"INCLUDE_STATE=true expects state shape[0] == {expected_dim}, "
+        f"got features.state.shape={shape} in {info_path}"
+    )
+PY
+  fi
 fi
 
 mkdir -p "${LOG_DIR}"/{train,eval,terminal,mp4,configs,metrics,checkpoints}
@@ -169,6 +240,7 @@ COMMON_ARGS=(
   --framework.qwenvl.attn_implementation "${ATTN_IMPLEMENTATION}"
   --datasets.vla_data.obs_image_size "${OBS_IMAGE_SIZE}"
   --datasets.vla_data.num_workers "${DATALOADER_NUM_WORKERS}"
+  --datasets.vla_data.include_state "${INCLUDE_STATE}"
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}"
   --trainer.save_interval "${SAVE_INTERVAL}"
   --trainer.eval_interval "${EVAL_INTERVAL}"
@@ -213,6 +285,8 @@ case "${ROUTE}" in
       --framework.action_model.num_actions_chunk "${NUM_ACTIONS_CHUNK}"
       --framework.action_model.action_dim "${ACTION_DIM}"
       --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
+      --framework.action_model.state_dim "${STATE_DIM}"
+      --framework.action_model.use_proprio "${ADAPTER_USE_PROPRIO}"
       --trainer.freeze_modules qwen_vl_interface
     )
     ;;
@@ -237,6 +311,8 @@ case "${ROUTE}" in
       --framework.action_model.num_actions_chunk "${NUM_ACTIONS_CHUNK}"
       --framework.action_model.action_dim "${ACTION_DIM}"
       --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
+      --framework.action_model.state_dim "${STATE_DIM}"
+      --framework.action_model.use_proprio "${ADAPTER_USE_PROPRIO}"
       --trainer.freeze_modules qwen_vl_interface
       --trainer.lora.enabled true
       --trainer.lora.r "${LORA_R}"
@@ -249,7 +325,7 @@ case "${ROUTE}" in
       --framework.name QwenPI
       --framework.action_model.action_model_type LayerwiseFM
       --framework.action_model.action_dim "${ACTION_DIM}"
-      --framework.action_model.state_dim "${ACTION_DIM}"
+      --framework.action_model.state_dim "${PI_EFFECTIVE_STATE_DIM}"
       --framework.action_model.action_horizon "${ACTION_HORIZON}"
       --framework.action_model.repeated_diffusion_steps "${PI_REPEATED_DIFFUSION_STEPS}"
       --framework.action_model.num_inference_timesteps "${PI_NUM_INFERENCE_TIMESTEPS}"
@@ -288,6 +364,11 @@ set +e
   echo "ACTION_QUERY_NUM=${ACTION_QUERY_NUM}"
   echo "NUM_ACTIONS_CHUNK=${NUM_ACTIONS_CHUNK}"
   echo "ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM}"
+  echo "INCLUDE_STATE=${INCLUDE_STATE}"
+  echo "STATE_DIM=${STATE_DIM}"
+  echo "ADAPTER_USE_PROPRIO=${ADAPTER_USE_PROPRIO}"
+  echo "PI_STATE_DIM=${PI_STATE_DIM:-<auto>}"
+  echo "PI_EFFECTIVE_STATE_DIM=${PI_EFFECTIVE_STATE_DIM}"
   echo "LORA_R=${LORA_R}"
   echo "LORA_ALPHA=${LORA_ALPHA}"
   echo "LORA_DROPOUT=${LORA_DROPOUT}"

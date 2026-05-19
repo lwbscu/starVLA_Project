@@ -3,9 +3,9 @@
 """Policy server wrapper.
 
 Encapsulates a `baseframework` instance plus a :class:`PolicyNormProcessor`
-that reuses the *training-time* :class:`ComposedModalityTransform` for action
-un-normalization (no hand-rolled math). The websocket server returns
-already-unnormalized actions.
+that reuses the *training-time* :class:`ComposedModalityTransform` for state
+normalization and action un-normalization (no hand-rolled math). The websocket
+server accepts raw env states and returns already-unnormalized actions.
 
 Client-side responsibilities that REMAIN on the client:
   - environment-specific adapters (image_history, gripper sticky, action
@@ -155,7 +155,16 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
-        out = self._framework.predict_action(examples=examples, **kwargs)
+        processed_examples = []
+        for example in examples:
+            if "state" not in example or example["state"] is None:
+                processed_examples.append(example)
+                continue
+            processed_example = dict(example)
+            processed_example["state"] = proc.apply_state(np.asarray(example["state"]))
+            processed_examples.append(processed_example)
+
+        out = self._framework.predict_action(examples=processed_examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
 
         unnorm = np.stack(

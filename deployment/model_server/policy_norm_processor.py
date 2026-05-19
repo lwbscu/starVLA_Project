@@ -394,3 +394,49 @@ class PolicyNormProcessor:
                 v = v.detach().cpu().numpy()
             parts.append(np.asarray(v))
         return np.concatenate(parts, axis=-1)
+
+    # ------------------------------------------------------------------
+    # Forward path (env state -> model input state)
+    # ------------------------------------------------------------------
+    def apply_state(self, raw_state: np.ndarray) -> np.ndarray:
+        """Normalize raw env state using the training-time pipeline.
+
+        Args:
+            raw_state: shape ``(T, D)`` or ``(D,)`` where
+                ``D == sum(state_key_dims.values())``.
+
+        Returns:
+            ``(T, D)`` normalized state in the same concatenated key order used
+            by the training dataloader.
+        """
+        raw_state = np.asarray(raw_state, dtype=np.float32)
+        if raw_state.ndim == 1:
+            raw_state = raw_state[None, :]
+        if raw_state.ndim != 2:
+            raise ValueError(f"Expected state shape (T, D) or (D,), got {raw_state.shape}")
+        if not self._state_keys:
+            raise ValueError("Checkpoint data config has no state_keys; cannot normalize state for inference.")
+
+        data: Dict[str, np.ndarray] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            data[full_key] = raw_state[..., cursor : cursor + dim_k]
+            cursor += dim_k
+
+        if cursor != raw_state.shape[-1]:
+            raise ValueError(
+                f"Sum of per-key state dims ({cursor}) != state_dim "
+                f"({raw_state.shape[-1]}). state_keys={self._state_keys}, "
+                f"state_key_dims={self._state_key_dims}"
+            )
+
+        out = self._transform.apply(data)
+
+        parts: List[np.ndarray] = []
+        for full_key in self._state_keys:
+            value = out[full_key]
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+            parts.append(np.asarray(value))
+        return np.concatenate(parts, axis=-1)

@@ -113,6 +113,11 @@ from tqdm import tqdm
 
 from deployment.model_server.tools import image_tools
 from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from examples.calvin.eval_files.rollout_lerobot_writer import (
+    RolloutLeRobotWriter,
+    calvin_robot_obs_to_state,
+    estimate_rollout_distances,
+)
 
 # from calvin_env.envs.play_table_env import get_env
 
@@ -350,6 +355,11 @@ class Args:
     eval_log_dir: str = "tmp/calvin/eval_logs"  # Path to save evaluation logs and videos
     reset: bool = False  # If True, reset robot state between tasks (easier)
     diverse_inst: bool = False  # Use diverse instructions (zero-shot generalization)
+    rollout_lerobot_dir: str = ""  # If set, save each rollout subtask as a LeRobot-style episode.
+    rollout_lerobot_write_videos: bool = False  # Also write mp4 files beside parquet image columns.
+    rollout_lerobot_fps: int = 10
+    rollout_lerobot_require_target_distance: bool = False  # Hard fail when target distance cannot be inferred.
+    send_state_to_policy: bool = False  # Forward CALVIN 8D proprio state to policies trained with include_state=true.
 
 
 class CalvinPolicyClient:
@@ -363,6 +373,7 @@ class CalvinPolicyClient:
         replan_steps: int = 5,
         pretrained_path: str = "",
         unnorm_key: str = "",
+        send_state_to_policy: bool = False,
     ):
         self.client = ModelClient(
             host=host,
@@ -374,6 +385,7 @@ class CalvinPolicyClient:
         self.resize_size = resize_size
         self.replan_steps = replan_steps
         self.step_count = 0
+        self.send_state_to_policy = bool(send_state_to_policy)
 
     def reset(self):
         """Reset action plan buffer."""
@@ -408,6 +420,8 @@ class CalvinPolicyClient:
             "image": [image, wrist_image],
             "lang": lang_annotation,
         }
+        if self.send_state_to_policy:
+            example["state"] = calvin_robot_obs_to_state(obs["robot_obs"])[None, :]
 
         # Query model
         model_output = self.client.step(example=example, step=self.step_count)
@@ -514,6 +528,7 @@ def evaluate_policy_ddp(
     create_plan_tsne=False,
     reset=False,
     diverse_inst=False,
+    rollout_writer=None,
 ):
     """
     Run this function to evaluate a model on the CALVIN challenge.
@@ -575,6 +590,7 @@ def evaluate_policy_ddp(
             base_sequence_i + local_sequence_i,
             reset=reset,
             diverse_inst=diverse_inst,
+            rollout_writer=rollout_writer,
         )
         results.append(result)
         if not debug:
@@ -604,6 +620,7 @@ def evaluate_sequence(
     sequence_i=-1,
     reset=False,
     diverse_inst=False,
+    rollout_writer=None,
 ):
     """
     Evaluates a sequence of language instructions.
@@ -634,6 +651,7 @@ def evaluate_sequence(
                 robot_obs=robot_obs,
                 scene_obs=scene_obs,
                 diverse_inst=diverse_inst,
+                rollout_writer=rollout_writer,
             )
         else:
             success = rollout(
@@ -648,6 +666,7 @@ def evaluate_sequence(
                 subtask_i,
                 sequence_i,
                 diverse_inst=diverse_inst,
+                rollout_writer=rollout_writer,
             )
         if success:
             success_counter += 1
@@ -670,6 +689,7 @@ def rollout(
     robot_obs=None,
     scene_obs=None,
     diverse_inst=False,
+    rollout_writer=None,
 ):
     """
     Run the actual rollout on one subtask (which is one natural language instruction).
@@ -690,11 +710,25 @@ def rollout(
         lang_annotation.replace("\u2019", "'")
     policy.reset()
     start_info = env.get_info()
+    rollout_episode = None
+    if rollout_writer is not None:
+        rollout_episode = rollout_writer.start_episode(
+            sequence_index=sequence_i,
+            subtask_index=subtask_i,
+            subtask=subtask,
+            language=lang_annotation,
+            initial_state={
+                "robot_obs": obs.get("robot_obs", robot_obs),
+                "scene_obs": obs.get("scene_obs", scene_obs),
+            },
+            start_info=start_info,
+        )
 
     if debug:
         img_queue = []
 
     for step in range(EP_LEN):
+        obs_before_action = obs
 
         action = policy.step(obs, lang_annotation)
 
@@ -703,7 +737,7 @@ def rollout(
             action = np.array(action, copy=True)
         action[-1] = 1 if action[-1] > 0 else -1
 
-        obs, _, _, current_info = env.step(action)
+        obs, _, env_done, current_info = env.step(action)
         if debug:
             img_copy = copy.deepcopy(obs["rgb_obs"]["rgb_static"])
             img_queue.append(img_copy)
@@ -713,11 +747,35 @@ def rollout(
 
         # check if current step solves a task
         current_task_info = task_oracle.get_task_info_for_set(start_info, current_info, {subtask})
-        if len(current_task_info) > 0:
+        step_success = len(current_task_info) > 0
+        done = bool(env_done) or step_success or step == EP_LEN - 1
+
+        if rollout_episode is not None:
+            distance_info = estimate_rollout_distances(
+                obs=obs_before_action,
+                current_info=current_info,
+                subtask=subtask,
+            )
+            rollout_writer.add_step(
+                rollout_episode,
+                obs=obs_before_action,
+                action=action,
+                env_done=bool(env_done),
+                done=done,
+                success=step_success,
+                current_info=current_info,
+                distance_info=distance_info,
+            )
+
+        if step_success:
+            if rollout_episode is not None:
+                rollout_writer.finish_episode(rollout_episode, success=True)
             if debug:
                 print(colored("success", "green"), end=" ")
                 _write_debug_mp4(img_queue, eval_log_dir, sequence_i, subtask_i, subtask, "succ")
             return True
+    if rollout_episode is not None:
+        rollout_writer.finish_episode(rollout_episode, success=False)
     if debug:
         print(colored("fail", "red"), end=" ")
         _write_debug_mp4(img_queue, eval_log_dir, sequence_i, subtask_i, subtask, "fail")
@@ -734,8 +792,17 @@ def main(args: Args):
         args.replan_steps,
         pretrained_path=args.pretrained_path,
         unnorm_key=args.unnorm_key,
+        send_state_to_policy=args.send_state_to_policy,
     )
     env = make_env(args.dataset_path)
+    rollout_writer = None
+    if args.rollout_lerobot_dir:
+        rollout_writer = RolloutLeRobotWriter(
+            args.rollout_lerobot_dir,
+            fps=args.rollout_lerobot_fps,
+            write_videos=args.rollout_lerobot_write_videos,
+            require_target_distance=args.rollout_lerobot_require_target_distance,
+        )
 
     evaluate_policy_ddp(
         policy,
@@ -749,6 +816,7 @@ def main(args: Args):
         args.create_plan_tsne,
         args.reset,
         args.diverse_inst,
+        rollout_writer=rollout_writer,
     )
 
 
