@@ -985,3 +985,25 @@
 
 结果如何：
 已修改 `H200_批量测试命令行.md`、`examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`examples/calvin/eval_files/eval_calvin.py` 和本日志。验证通过：`bash -n examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`bash -n examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`、`python -m py_compile examples/calvin/eval_files/eval_calvin.py`、`git diff --check -- examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh examples/calvin/eval_files/eval_calvin.py H200_批量测试命令行.md codex日志.md`，并对新增文档里的 9.1 公共参数代码块和 9.2 执行代码块做了 `bash -n` 静态检查。本轮未在 H200 上实际启动 8 卡 eval。
+
+## 2026-05-19 21:25
+
+问题是什么：
+用户要继续探索共享数据集，发现 `/inspire/qb-ilm2/project/26summer-camp-10/public/three/dataset/`，需要检索该路径下到底有哪些数据、布局是否适合跨数据集预训练；同时用户已经检索到新的 CALVIN D-D 环境路径 `/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_d_d/validation/.hydra/merged_config.yaml`，询问还缺哪些信息。
+
+解决思路：
+本地机器没有挂载 `/inspire/...`，不能直接读取共享目录，所以新增一个只读扫描脚本 `examples/calvin/scripts/inspect_dataset_layout.py`，用于在 H200 上扫描任意数据根目录，识别 LeRobot root、CALVIN eval root、扩展名分布、meta/info.json、meta/modality.json、parquet/mp4 数量和样本 parquet schema。同步更新 `docs/datasets_anlazy.md`：把 D-D eval 优先路径从旧的 `calvin_abc_d/task_D_D` 调整为用户新发现的 `public/inspire_shared/calvin_d_d`；新增 `/public/three/dataset` 跨数据集预训练扫描命令，并列出预训练前必须确认的 dataset_root、dataset_subdir、format、modality、state_dim、action_dim、fps、episode/frame 数量、robot_type、embodiment_tag、language 字段和视频引用一致性。
+
+结果如何：
+已新增 `examples/calvin/scripts/inspect_dataset_layout.py`，已更新本地 `docs/datasets_anlazy.md` 和本日志。验证通过：`python -m py_compile examples/calvin/scripts/inspect_dataset_layout.py`、`python examples/calvin/scripts/inspect_dataset_layout.py . --max-count-files 200 --max-count-files-per-child 100 --json-out /tmp/starvla_dataset_scan_test.json`、`git diff --check -- docs/datasets_anlazy.md examples/calvin/scripts/inspect_dataset_layout.py codex日志.md`。注意：`docs/datasets_anlazy.md` 当前被 `.gitignore` 忽略，不会自动进入普通 `git status`；本轮未提交、未推送，也未在 H200 上实际扫描 `/public/three/dataset`。
+
+## 2026-05-19 21:29
+
+问题是什么：
+用户明确要求：后续如果没有特殊说明，完成改动后都要提交并推送。当前工作区还有新增数据集扫描脚本、被忽略的本地数据集分析文档更新，以及本日志未提交。
+
+解决思路：
+将该偏好作为后续默认执行规则：除非用户明确说“先不要推送/不要提交”，否则完成代码或文档改动后自动提交并推送。检查工作区，只纳入本轮相关文件：`examples/calvin/scripts/inspect_dataset_layout.py`、`docs/datasets_anlazy.md` 和 `codex日志.md`。其中 `docs/datasets_anlazy.md` 被 `.gitignore` 忽略，但本轮内容对跨数据集预训练有用，因此用 `git add -f` 显式纳入。
+
+结果如何：
+准备提交并推送。提交前验证继续使用此前已通过的 `python -m py_compile examples/calvin/scripts/inspect_dataset_layout.py` 和 `git diff --check -- examples/calvin/scripts/inspect_dataset_layout.py codex日志.md`；本条记录用于对齐新的默认工作规则。
