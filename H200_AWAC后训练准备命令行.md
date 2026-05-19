@@ -151,6 +151,67 @@ dry-run 通过后正式写入：
 
 rollout 不是重放训练集；它是在 CALVIN 环境中评估当前 policy。这里先跑小量诊断，确认 state 和 rollout 写盘链路。
 
+### 5.1 并发吃满 8 卡生成大量 rollout
+
+模型服务当前不是 tensor parallel；单个 server 传 `CUDA_VISIBLE_DEVICES=3,4,5,6,7` 不会自动把 9B 切到 5 张卡。要真正吃满 8 张 H200，使用 8 个单卡 rollout worker：
+
+- Qwen3.5-0.8B：GPU 0，1 个 worker。
+- Qwen3.5-4B：GPU 1,2，2 个 worker。
+- Qwen3.5-9B：GPU 3,4,5,6,7，5 个 worker。
+
+每个 worker 使用不同 `EVAL_SEQUENCE_INDEX_OFFSET`，同一模型内部不重复采样。默认每个模型生成 200 条 eval sequence 的 rollout；如需更大，调 `ROLLOUT_NUM_SEQUENCES_PER_MODEL`。
+
+```bash
+conda activate starVLA_qwen35
+
+export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
+export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
+export STAR_VLA_PYTHON="${CONDA_ROOT}/envs/starVLA_qwen35/bin/python"
+export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
+export ROLLOUT_PARQUET_PYTHON="${STAR_VLA_PYTHON}"
+
+export EVAL_BATCH_ROOT="${PROJECT_ROOT}/logs/20260519_h200_server1_pi_state_30k_v1"
+export ROLLOUT_OUTPUT_ROOT="${PROJECT_ROOT}/results/rollout"
+export ROLLOUT_RUN_NAME=pi_state_awac_parallel_200seq_v1
+export ROLLOUT_NUM_SEQUENCES_PER_MODEL=200
+
+export H200_CALVIN_EVAL_DATASET_PATH="${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset"
+export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
+
+# 大量 rollout 默认不写 mp4，避免视频 IO 拖慢。需要诊断视频时小量单独跑。
+export DEBUG_MP4=0
+export REQUIRE_MP4=0
+export WRITE_ROLLOUT_VIDEOS=0
+
+bash examples/calvin/eval_files/eval_h200_pi_state_rollout_parallel_8gpu.sh
+```
+
+输出根目录：
+
+```bash
+${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1
+```
+
+每个 worker 的 LeRobot rollout 在：
+
+```bash
+${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_0p8b/shard_0/server1_pi_state/qwen35_0p8b/steps_30000/eval/rollout_lerobot
+${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_4b/shard_0/server1_pi_state/qwen35_4b/steps_30000/eval/rollout_lerobot
+${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_4b/shard_1/server1_pi_state/qwen35_4b/steps_30000/eval/rollout_lerobot
+${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_9b/shard_*/server1_pi_state/qwen35_9b/steps_25000/eval/rollout_lerobot
+```
+
+汇总文件：
+
+```bash
+cat "${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/manifest.tsv"
+cat "${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/summary.tsv"
+```
+
+### 5.2 单进程小量诊断
+
+如果需要 mp4 诊断，先用下面的小量串行命令，确认一条链路可视化正常。
+
 ```bash
 conda activate starVLA_qwen35
 
