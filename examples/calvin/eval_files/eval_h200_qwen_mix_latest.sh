@@ -17,6 +17,8 @@ export UNNORM_KEY=${UNNORM_KEY:-franka}
 export POLICY_SERVER_START_TIMEOUT=${POLICY_SERVER_START_TIMEOUT:-600}
 export FAIL_FAST=${FAIL_FAST:-0}
 export REQUIRE_MP4=${REQUIRE_MP4:-1}
+export DEBUG_MP4=${DEBUG_MP4:-1}
+export EVAL_SEQUENCE_INDEX_OFFSET=${EVAL_SEQUENCE_INDEX_OFFSET:-0}
 export SEND_STATE_TO_POLICY=${SEND_STATE_TO_POLICY:-0}
 export WRITE_ROLLOUT_LEROBOT=${WRITE_ROLLOUT_LEROBOT:-0}
 export WRITE_ROLLOUT_VIDEOS=${WRITE_ROLLOUT_VIDEOS:-0}
@@ -84,9 +86,9 @@ resolve_eval_dataset() {
   fi
 
   local candidate
-  # Keep this order aligned with docs/datasets_anlazy.md:
-  # training uses calvin_task_ABC_D (LeRobot), quick CALVIN visual eval uses
-  # task_D_D because the shared H200 tree currently exposes D env config there.
+  # Keep this order aligned with docs/datasets_anlazy.md and H200_批量测试命令行.md:
+  # training uses calvin_task_ABC_D (LeRobot). CALVIN rollout eval requires
+  # a dataset/split folder that contains .hydra/merged_config.yaml.
   for candidate in \
     "${H200_CALVIN_DATA_ROOT%/}/task_D_D" \
     "${H200_CALVIN_DATA_ROOT%/}/task_ABC_D" \
@@ -304,6 +306,8 @@ run_one_eval() {
     echo "eval_port=${EVAL_PORT}"
     echo "eval_gpu=${EVAL_GPU}"
     echo "num_sequences=${NUM_SEQUENCES}"
+    echo "sequence_index_offset=${EVAL_SEQUENCE_INDEX_OFFSET}"
+    echo "debug_mp4=${DEBUG_MP4}"
     echo "send_state_to_policy=${SEND_STATE_TO_POLICY}"
     echo "dataset_path=${H200_CALVIN_EVAL_DATASET_PATH}"
     echo "calvin_config_path=${CALVIN_CONFIG_PATH}"
@@ -337,9 +341,12 @@ run_one_eval() {
     --args.calvin-config-path "${CALVIN_CONFIG_PATH}"
     --args.eval-sequences-path "${EVAL_SEQUENCES_PATH}"
     --args.num-sequences "${NUM_SEQUENCES}"
+    --args.sequence-index-offset "${EVAL_SEQUENCE_INDEX_OFFSET}"
     --args.eval-log-dir "${eval_dir}/mp4"
-    --args.debug
   )
+  if [[ "${DEBUG_MP4}" == "1" ]]; then
+    eval_args+=(--args.debug)
+  fi
   if [[ "${SEND_STATE_TO_POLICY}" == "1" ]]; then
     eval_args+=(--args.send-state-to-policy)
   fi

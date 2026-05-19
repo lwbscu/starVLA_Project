@@ -974,3 +974,14 @@
 
 结果如何：
 本轮未修改代码。输出给用户一套只读检索命令和分类逻辑，要求以实际扫描结果为准，不通过关闭 eval dataset 检查绕过问题。本轮不提交、不推送。
+
+## 2026-05-19 21:13
+
+问题是什么：
+用户要求在 `H200_批量测试命令行.md` 中新增 `#9 训练集批量测试`：可通过一个超参数控制测试数据占比；训练集快速测试不输出 mp4；结果分别写到 `logs/calvin_evaltrain_20260519_h200_server1_pi_state_30k_v1` 和 `logs/calvin_evaltrain_latest_20260519_h200_qwen_mix_30k_v1`；并要求尽量吃满 8 张 GPU。
+
+解决思路：
+先检查现有 eval 脚本，发现 `eval_h200_qwen_mix_latest.sh` 会无条件传 `--args.debug`，这会强制写 mp4，因此补充 `DEBUG_MP4` 开关，默认保持原行为，设置 `DEBUG_MP4=0` 时才关闭 mp4。为了 PI state 只有 3 个模型也能吃满 8 卡，给 `eval_calvin.py` 增加 `sequence_index_offset`，并在批量脚本中透传 `EVAL_SEQUENCE_INDEX_OFFSET`，保证 sequence 分片后 CALVIN language annotation 仍按原始索引对齐。文档新增第 9 节：`EVALTRAIN_RATIO` 控制选取 `eval_sequences.json` 的比例，`EVALTRAIN_NUM_SHARDS=8` 生成 8 个 shard；四路线混合结果按模型分组并行跑 8 worker，PI state 按 sequence shard 并行跑 8 worker。
+
+结果如何：
+已修改 `H200_批量测试命令行.md`、`examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`examples/calvin/eval_files/eval_calvin.py` 和本日志。验证通过：`bash -n examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`bash -n examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`、`python -m py_compile examples/calvin/eval_files/eval_calvin.py`、`git diff --check -- examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh examples/calvin/eval_files/eval_calvin.py H200_批量测试命令行.md codex日志.md`，并对新增文档里的 9.1 公共参数代码块和 9.2 执行代码块做了 `bash -n` 静态检查。本轮未在 H200 上实际启动 8 卡 eval。

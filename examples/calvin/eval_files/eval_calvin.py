@@ -344,6 +344,7 @@ class Args:
     calvin_config_path: str = "/home/lwb/Projects/SII/starVLA_Projects/calvin/calvin_models/conf"
     eval_sequences_path: str = "examples/calvin/eval_files/eval_sequences.json"
     num_sequences: int = 1000  # Number of evaluation sequences
+    sequence_index_offset: int = 0  # Original eval_sequences index of the first selected sequence.
     num_workers: int = 1  # For future multi-process support
     seed: int = 0
     create_plan_tsne: bool = False
@@ -523,6 +524,7 @@ def evaluate_policy_ddp(
     calvin_conf_path,
     eval_sequences_path,
     num_sequences,
+    sequence_index_offset=0,
     eval_log_dir=None,
     debug=False,
     create_plan_tsne=False,
@@ -569,7 +571,7 @@ def evaluate_policy_ddp(
     results = []
     plans = defaultdict(list)
     local_sequence_i = 0
-    base_sequence_i = 0  # device_id * interval_len
+    base_sequence_i = int(sequence_index_offset)  # Original eval_sequences index for sharded evaluation.
 
     if not debug:
         eval_sequences = tqdm(selected_eval_sequences, position=0, leave=True)
@@ -811,6 +813,7 @@ def main(args: Args):
         args.calvin_config_path,
         args.eval_sequences_path,
         args.num_sequences,
+        args.sequence_index_offset,
         args.eval_log_dir,
         args.debug,
         args.create_plan_tsne,
