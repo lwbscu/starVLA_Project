@@ -875,3 +875,14 @@
 
 结果如何：
 新增 `examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh` 和 `examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`。前者默认评测 `logs/20260519_h200_qwen_mix_30k_v1` 的 `server1_oft/server2_adapter/server3_lora/server4_pi` 每个 `qwen35_0p8b/qwen35_4b/qwen35_9b` 最新 `steps_*_pytorch_model.pt`；后者默认评测 `logs/20260519_h200_server1_pi_state_30k_v1/server1_pi_state` 下三个规格最新 checkpoint，并设置 `SEND_STATE_TO_POLICY=1`。输出统一写入 `logs/calvin_eval_latest_*`，每个模型都有 policy server 日志、eval 日志、mp4/results.json 和批次 `summary.tsv`。验证通过：`bash -n` 两个脚本、`git diff --check`。未在本地实际跑 CALVIN/H200 eval。
+
+## 2026-05-19 19:14
+
+问题是什么：
+用户提醒训练数据集说明在 `docs/datasets_anlazy.md` 中已有定义，需要 eval 脚本和文档中的数据集边界保持一致。文档明确训练用 LeRobot/HF 数据集 `calvin_task_ABC_D`，而当前 H200 上用于快速 CALVIN 仿真可视化验证的数据应优先使用带 `.hydra/merged_config.yaml` 的 `task_D_D`。
+
+解决思路：
+读取 `docs/datasets_anlazy.md`，确认 `calvin_task_ABC_D` 是 BC/AWAC 训练数据，不应被当作 CALVIN 环境 eval 根目录；`task_D_D` 是当前共享盘上可用于 D 环境 smoke/visual eval 的仿真目录。修改统一评测脚本的数据集自动解析顺序，让 `H200_CALVIN_DATA_ROOT/task_D_D` 优先于 `task_ABC_D`，并在脚本内写明该顺序与数据集文档保持一致；仍保留显式 `H200_CALVIN_EVAL_DATASET_PATH` 覆盖入口。
+
+结果如何：
+修改 `examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`，eval dataset 自动发现现在优先选择 `/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d/task_D_D`。验证通过：`bash -n examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh`、`bash -n examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`、`git diff --check`。注意：该 eval 是 D 环境快速可视化/smoke 验证，不等同于官方 ABC-D validation；如果以后有正式 validation 目录，应通过 `H200_CALVIN_EVAL_DATASET_PATH` 显式指定。

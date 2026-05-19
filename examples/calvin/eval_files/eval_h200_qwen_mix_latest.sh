@@ -84,15 +84,18 @@ resolve_eval_dataset() {
   fi
 
   local candidate
+  # Keep this order aligned with docs/datasets_anlazy.md:
+  # training uses calvin_task_ABC_D (LeRobot), quick CALVIN visual eval uses
+  # task_D_D because the shared H200 tree currently exposes D env config there.
   for candidate in \
-    "${H200_CALVIN_DATA_ROOT%/}/task_ABC_D" \
     "${H200_CALVIN_DATA_ROOT%/}/task_D_D" \
+    "${H200_CALVIN_DATA_ROOT%/}/task_ABC_D" \
     "${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset" \
-    "${PROJECT_ROOT}/calvin/dataset/task_ABC_D" \
     "${PROJECT_ROOT}/calvin/dataset/task_D_D" \
+    "${PROJECT_ROOT}/calvin/dataset/task_ABC_D" \
     "${PROJECT_ROOT}/../calvin/dataset/calvin_debug_dataset" \
-    "${PROJECT_ROOT}/../calvin/dataset/task_ABC_D" \
     "${PROJECT_ROOT}/../calvin/dataset/task_D_D" \
+    "${PROJECT_ROOT}/../calvin/dataset/task_ABC_D" \
     "${H200_CALVIN_DATA_ROOT%/}/${H200_CALVIN_DATA_NAME}"
   do
     if [[ -d "${candidate}" ]] && is_calvin_eval_dataset "${candidate}"; then
