@@ -81,6 +81,8 @@ trainer:
   num_warmup_steps: 1000
   save_interval: 5000
   logging_frequency: 50
+  use_tensorboard: true
+  tensorboard_log_dir: null
   max_grad_norm: 1.0
   lr_scheduler_type: cosine
   learning_rate:

@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
+from torch.utils.tensorboard import SummaryWriter
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from omegaconf import OmegaConf
@@ -54,6 +55,39 @@ class AWACCriticTrainer(TrainerUtils):
         self.accelerator = accelerator
         self.completed_steps = 0
         self.awac_cfg = cfg.awac
+        self.tb_writer: SummaryWriter | None = None
+
+    def _init_tensorboard(self) -> None:
+        use_tb = getattr(self.config.trainer, "use_tensorboard", True) not in ["False", False]
+        if not use_tb or not self.accelerator.is_main_process:
+            return
+        log_dir = getattr(self.config.trainer, "tensorboard_log_dir", None)
+        if not log_dir:
+            log_dir = os.path.join(self.config.output_dir, "tensorboard")
+        os.makedirs(log_dir, exist_ok=True)
+        self.tb_writer = SummaryWriter(log_dir=log_dir)
+        logger.info(f"TensorBoard logging enabled: {log_dir}")
+
+    def _log_metrics(self, metrics: dict[str, float]) -> None:
+        if not self.accelerator.is_main_process:
+            return
+        step = self.completed_steps
+        wandb.log(metrics, step=step)
+        if self.tb_writer is None:
+            return
+        for key, value in metrics.items():
+            self.tb_writer.add_scalar(key, value, step)
+        last_lrs = self.lr_scheduler.get_last_lr()
+        self.tb_writer.add_scalar("learning_rate", last_lrs[0], step)
+
+    def _finish_logging(self) -> None:
+        if not self.accelerator.is_main_process:
+            return
+        wandb.finish()
+        if self.tb_writer is not None:
+            self.tb_writer.flush()
+            self.tb_writer.close()
+            self.tb_writer = None
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -82,6 +116,7 @@ class AWACCriticTrainer(TrainerUtils):
                 entity=self.config.wandb_entity,
                 group="awac-critic",
             )
+        self._init_tensorboard()
 
     def _save_checkpoint(self):
         if not self.accelerator.is_main_process:
@@ -167,16 +202,14 @@ class AWACCriticTrainer(TrainerUtils):
 
             if self.completed_steps % self.config.trainer.logging_frequency == 0:
                 metrics = {**critic_metrics, **value_metrics, "total_loss": float(total_loss.detach().cpu())}
-                if self.accelerator.is_main_process:
-                    wandb.log(metrics, step=self.completed_steps)
+                self._log_metrics(metrics)
                 progress.set_postfix(metrics)
 
             if self.completed_steps % self.config.trainer.save_interval == 0:
                 self._save_checkpoint()
 
         self._save_checkpoint()
-        if self.accelerator.is_main_process:
-            wandb.finish()
+        self._finish_logging()
 
 
 def build_critic_modules(cfg, actor):
