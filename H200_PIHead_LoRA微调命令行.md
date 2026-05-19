@@ -94,6 +94,7 @@ export CHECKPOINT_KEEP_STEPS=10000,20000,30000
 export LOGGING_FREQUENCY=10
 export USE_TENSORBOARD=true
 export DATALOADER_NUM_WORKERS=12
+export MIN_LOG_FREE_GB=250
 
 # LoRA 容量。E4/E5/E6 必须保持一致。
 # 若要和旧 LoRA baseline 完全对齐，可改成 LORA_R=64 / LORA_ALPHA=128。
@@ -133,6 +134,35 @@ PY
 declare -a H200_PIHEAD_LORA_PIDS=()
 declare -a H200_PIHEAD_LORA_NAMES=()
 declare -a H200_PIHEAD_LORA_LOG_DIRS=()
+
+check_pihead_lora_storage() {
+  test -n "${BATCH_ROOT:-}" || { echo "BATCH_ROOT is empty" >&2; return 2; }
+  mkdir -p "${BATCH_ROOT}"
+
+  echo "===== storage preflight ====="
+  df -h "${PROJECT_ROOT}" "${PROJECT_ROOT}/logs" "${BATCH_ROOT}" 2>/dev/null || true
+  df -hi "${PROJECT_ROOT}" "${PROJECT_ROOT}/logs" "${BATCH_ROOT}" 2>/dev/null || true
+  quota -s 2>/dev/null || true
+  du -sh "${PROJECT_ROOT}/logs" "${BATCH_ROOT}" 2>/dev/null || true
+
+  local available_kb
+  available_kb="$(df -Pk "${BATCH_ROOT}" | awk 'NR==2 {print $4}')"
+  local required_kb=$((MIN_LOG_FREE_GB * 1024 * 1024))
+  if [[ -n "${available_kb}" && "${available_kb}" =~ ^[0-9]+$ && "${available_kb}" -lt "${required_kb}" ]]; then
+    echo "free space below MIN_LOG_FREE_GB=${MIN_LOG_FREE_GB}GB: available_kb=${available_kb}" >&2
+    return 2
+  fi
+
+  local probe="${BATCH_ROOT}/.quota_probe_${EXPERIMENT_ID:-unknown}_$$"
+  if ! dd if=/dev/zero of="${probe}" bs=1M count=64 status=none; then
+    rm -f "${probe}" 2>/dev/null || true
+    echo "quota probe failed in ${BATCH_ROOT}; free quota before launching." >&2
+    return 2
+  fi
+  rm -f "${probe}"
+  sync
+  echo "===== storage preflight OK ====="
+}
 
 launch_pihead_lora_size() {
   local model_tag=$1
@@ -233,6 +263,8 @@ launch_three_sizes_for_pihead_lora() {
   H200_PIHEAD_LORA_PIDS=()
   H200_PIHEAD_LORA_NAMES=()
   H200_PIHEAD_LORA_LOG_DIRS=()
+
+  check_pihead_lora_storage || return 2
 
   local missing=0
   test -f "${PIHEAD_CKPT_0P8B}" || { echo "missing PI head checkpoint for qwen35_0p8b: ${PIHEAD_CKPT_0P8B}" >&2; missing=1; }
@@ -370,3 +402,47 @@ tensorboard --logdir logs/20260520_h200_pihead_lora_vit_30k_v1 --port 6006
 tensorboard --logdir logs/20260520_h200_pihead_lora_llm_30k_v1 --port 6007
 tensorboard --logdir logs/20260520_h200_pihead_lora_vit_llm_30k_v1 --port 6008
 ```
+
+## 6. 磁盘配额失败处理
+
+如果日志出现：
+
+```text
+OSError: [Errno 122] Disk quota exceeded
+```
+
+这说明训练已经能启动，模型、LoRA target 和数据链路不是当前失败点；失败发生在向 `LOG_DIR/checkpoints/<run_id>/config.full.yaml`、TensorBoard、checkpoint 或统计文件写盘时。不要通过关闭配置保存来绕过，应先释放配额或换输出目录。
+
+先停掉当前失败批次中残留的进程：
+
+```bash
+ps -ef | grep "20260520_h200_pihead_lora_llm_30k_v1" | grep -v grep
+pkill -f "20260520_h200_pihead_lora_llm_30k_v1" || true
+```
+
+检查和定位大文件：
+
+```bash
+df -h "${PROJECT_ROOT}" "${PROJECT_ROOT}/logs"
+df -hi "${PROJECT_ROOT}" "${PROJECT_ROOT}/logs"
+quota -s 2>/dev/null || true
+du -sh "${PROJECT_ROOT}/logs" "${PROJECT_ROOT}/logs/20260520_h200_pihead_lora_llm_30k_v1" 2>/dev/null || true
+find "${PROJECT_ROOT}/logs" -type f -name "steps_*_pytorch_model.pt" -printf '%s\t%p\n' 2>/dev/null | sort -nr | head -40 | numfmt --field=1 --to=iec
+```
+
+确认失败批次没有可保留结果后再删。不要删除 `PIHEAD_SOURCE_ROOT` 里的 PI-State 源 checkpoint：
+
+```bash
+rm -rf "${PROJECT_ROOT}/logs/20260520_h200_pihead_lora_llm_30k_v1"
+sync
+```
+
+如果 `qb-ilm2` 个人目录配额仍然紧张，可以把新实验输出到 `hdd` 个人目录，代码和数据仍留在原位置：
+
+```bash
+export BATCH_NAME=20260520_h200_pihead_lora_llm_30k_v1
+export BATCH_ROOT="/inspire/hdd/project/26summer-camp-10/26220216/starVLA_logs/${BATCH_NAME}"
+mkdir -p "${BATCH_ROOT}"
+```
+
+然后重新执行对应 E4/E5/E6 启动块。公共函数会先做 `64MiB` 写盘探针和 `MIN_LOG_FREE_GB` 检查，失败就不会启动三路训练。
