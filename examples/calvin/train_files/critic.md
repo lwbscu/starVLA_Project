@@ -169,7 +169,7 @@ w = clip(exp(A / λ), w_max)
 | Actor | `steps_*_pytorch_model.pt` | 与 BC 相同，仅 **可训练 actor** 权重 |
 
 - 旧 ckpt 若含 `value_net` 键，Actor 加载会 **warning 并忽略**；应用新 Critic 重训。
-- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200` / `calvin_hlx_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`。H200 原始数据 `calvin_abc_d_h200 → calvin_task_ABC_D`，增强数据 `calvin_hlx_h200 → hlx`。
+- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200` / `calvin_hlx_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`。H200 原始数据 `calvin_abc_d_h200 → calvin_task_ABC_D`，增强数据 `calvin_hlx_h200 → hlx/calvin_task_ABC_D`。
 
 ### 2.6 可以安全改的配置（不破坏契约时）
 
