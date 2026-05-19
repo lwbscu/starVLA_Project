@@ -23,10 +23,14 @@ RUN_ID=${RUN_ID:-route_validation_${ROUTE}_${MAX_TRAIN_STEPS}step}
 LOG_DIR=${LOG_DIR:-logs/route_validation/log_${RUN_TS}_${RUN_ID}}
 USE_TENSORBOARD=${USE_TENSORBOARD:-true}
 TENSORBOARD_LOG_DIR=${TENSORBOARD_LOG_DIR:-"${LOG_DIR}/tensorboard"}
+FREEZE_MODULES=${FREEZE_MODULES:-qwen_vl_interface}
+PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
+RELOAD_MODULES=${RELOAD_MODULES:-}
 CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_smoke.yaml}
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
+PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-}
 BASE_VLM=${BASE_VLM:-./playground/Pretrained_models/Qwen3.5-9B}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE:-"[112,112]"}
@@ -42,6 +46,11 @@ PI_STATE_DIM=${PI_STATE_DIM:-}
 LORA_R=${LORA_R:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+LORA_ENABLED=${LORA_ENABLED:-false}
+LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-}
+LORA_TARGET_INCLUDE_PREFIXES=${LORA_TARGET_INCLUDE_PREFIXES:-}
+LORA_TARGET_EXCLUDE_PREFIXES=${LORA_TARGET_EXCLUDE_PREFIXES:-}
+LORA_FAIL_IF_NO_TARGET_MODULES=${LORA_FAIL_IF_NO_TARGET_MODULES:-true}
 PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS:-4}
 PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS:-2}
 PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS:-32}
@@ -73,6 +82,8 @@ normalize_bool_value() {
 INCLUDE_STATE="$(normalize_bool_value INCLUDE_STATE "${INCLUDE_STATE}")" || exit 2
 ADAPTER_USE_PROPRIO="$(normalize_bool_value ADAPTER_USE_PROPRIO "${ADAPTER_USE_PROPRIO}")" || exit 2
 USE_TENSORBOARD="$(normalize_bool_value USE_TENSORBOARD "${USE_TENSORBOARD}")" || exit 2
+LORA_ENABLED="$(normalize_bool_value LORA_ENABLED "${LORA_ENABLED}")" || exit 2
+LORA_FAIL_IF_NO_TARGET_MODULES="$(normalize_bool_value LORA_FAIL_IF_NO_TARGET_MODULES "${LORA_FAIL_IF_NO_TARGET_MODULES}")" || exit 2
 
 if [[ -z "${CALVIN_DATA_ROOT}" && -z "${CALVIN_DATA_MIX}" && -z "${CALVIN_DATA_NAME}" ]]; then
   H200_CANDIDATE_ROOT=${H200_CALVIN_DATA_ROOT:-${H200_DEFAULT_CALVIN_DATA_ROOT}}
@@ -156,6 +167,18 @@ if [[ -n "${PI_STATE_DIM}" ]]; then
     echo "PI_STATE_DIM must be empty or a positive integer, got: ${PI_STATE_DIM}" >&2
     exit 2
   fi
+fi
+
+if [[ -n "${PER_DEVICE_BATCH_SIZE}" ]]; then
+  if ! [[ "${PER_DEVICE_BATCH_SIZE}" =~ ^[0-9]+$ ]] || (( PER_DEVICE_BATCH_SIZE < 1 )); then
+    echo "PER_DEVICE_BATCH_SIZE must be empty or a positive integer, got: ${PER_DEVICE_BATCH_SIZE}" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "${PRETRAINED_CHECKPOINT}" && ! -f "${PRETRAINED_CHECKPOINT}" ]]; then
+  echo "PRETRAINED_CHECKPOINT does not exist: ${PRETRAINED_CHECKPOINT}" >&2
+  exit 2
 fi
 
 if [[ "${ADAPTER_USE_PROPRIO}" == "true" && "${INCLUDE_STATE}" != "true" ]]; then
@@ -265,6 +288,18 @@ if [[ -n "${LOGGING_FREQUENCY}" ]]; then
   COMMON_ARGS+=(--trainer.logging_frequency "${LOGGING_FREQUENCY}")
 fi
 
+if [[ -n "${PER_DEVICE_BATCH_SIZE}" ]]; then
+  COMMON_ARGS+=(--datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}")
+fi
+
+if [[ -n "${PRETRAINED_CHECKPOINT}" ]]; then
+  COMMON_ARGS+=(--trainer.pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
+fi
+
+if [[ -n "${RELOAD_MODULES}" ]]; then
+  COMMON_ARGS+=(--trainer.reload_modules "${RELOAD_MODULES}")
+fi
+
 if [[ -n "${CALVIN_DATA_ROOT}" ]]; then
   COMMON_ARGS+=(
     --datasets.vla_data.data_root_dir "${CALVIN_DATA_ROOT}"
@@ -279,7 +314,7 @@ case "${ROUTE}" in
       --framework.action_model.action_model_type MLP
       --framework.action_model.action_dim "${ACTION_DIM}"
       --framework.action_model.action_horizon "${ACTION_HORIZON}"
-      --trainer.freeze_modules qwen_vl_interface
+      --trainer.freeze_modules "${FREEZE_MODULES}"
     )
     ;;
   p1_adapter)
@@ -292,7 +327,7 @@ case "${ROUTE}" in
       --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
       --framework.action_model.state_dim "${STATE_DIM}"
       --framework.action_model.use_proprio "${ADAPTER_USE_PROPRIO}"
-      --trainer.freeze_modules qwen_vl_interface
+      --trainer.freeze_modules "${FREEZE_MODULES}"
     )
     ;;
   p2_lora_oft)
@@ -301,7 +336,7 @@ case "${ROUTE}" in
       --framework.action_model.action_model_type MLP
       --framework.action_model.action_dim "${ACTION_DIM}"
       --framework.action_model.action_horizon "${ACTION_HORIZON}"
-      --trainer.freeze_modules qwen_vl_interface
+      --trainer.freeze_modules "${FREEZE_MODULES}"
       --trainer.lora.enabled true
       --trainer.lora.r "${LORA_R}"
       --trainer.lora.alpha "${LORA_ALPHA}"
@@ -318,7 +353,7 @@ case "${ROUTE}" in
       --framework.action_model.hidden_dim "${ADAPTER_HIDDEN_DIM}"
       --framework.action_model.state_dim "${STATE_DIM}"
       --framework.action_model.use_proprio "${ADAPTER_USE_PROPRIO}"
-      --trainer.freeze_modules qwen_vl_interface
+      --trainer.freeze_modules "${FREEZE_MODULES}"
       --trainer.lora.enabled true
       --trainer.lora.r "${LORA_R}"
       --trainer.lora.alpha "${LORA_ALPHA}"
@@ -335,7 +370,7 @@ case "${ROUTE}" in
       --framework.action_model.repeated_diffusion_steps "${PI_REPEATED_DIFFUSION_STEPS}"
       --framework.action_model.num_inference_timesteps "${PI_NUM_INFERENCE_TIMESTEPS}"
       --framework.action_model.num_target_vision_tokens "${PI_NUM_TARGET_VISION_TOKENS}"
-      --trainer.freeze_modules qwen_vl_interface
+      --trainer.freeze_modules "${FREEZE_MODULES}"
     )
     ;;
   *)
@@ -343,6 +378,25 @@ case "${ROUTE}" in
     exit 2
     ;;
 esac
+
+if [[ "${LORA_ENABLED}" == "true" ]]; then
+  ROUTE_ARGS+=(
+    --trainer.lora.enabled true
+    --trainer.lora.r "${LORA_R}"
+    --trainer.lora.alpha "${LORA_ALPHA}"
+    --trainer.lora.dropout "${LORA_DROPOUT}"
+    --trainer.lora.fail_if_no_target_modules "${LORA_FAIL_IF_NO_TARGET_MODULES}"
+  )
+  if [[ -n "${LORA_TARGET_MODULES}" ]]; then
+    ROUTE_ARGS+=(--trainer.lora.target_modules "${LORA_TARGET_MODULES}")
+  fi
+  if [[ -n "${LORA_TARGET_INCLUDE_PREFIXES}" ]]; then
+    ROUTE_ARGS+=(--trainer.lora.target_include_prefixes "${LORA_TARGET_INCLUDE_PREFIXES}")
+  fi
+  if [[ -n "${LORA_TARGET_EXCLUDE_PREFIXES}" ]]; then
+    ROUTE_ARGS+=(--trainer.lora.target_exclude_prefixes "${LORA_TARGET_EXCLUDE_PREFIXES}")
+  fi
+fi
 
 set +e
 {
@@ -362,6 +416,7 @@ set +e
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
   echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
+  echo "PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-<config_yaml>}"
   echo "BASE_VLM=${BASE_VLM}"
   echo "QWEN_VL_HIDDEN_DIM=${QWEN_VL_HIDDEN_DIM}"
   echo "ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
@@ -379,6 +434,14 @@ set +e
   echo "LORA_R=${LORA_R}"
   echo "LORA_ALPHA=${LORA_ALPHA}"
   echo "LORA_DROPOUT=${LORA_DROPOUT}"
+  echo "LORA_ENABLED=${LORA_ENABLED}"
+  echo "LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-<default>}"
+  echo "LORA_TARGET_INCLUDE_PREFIXES=${LORA_TARGET_INCLUDE_PREFIXES:-<none>}"
+  echo "LORA_TARGET_EXCLUDE_PREFIXES=${LORA_TARGET_EXCLUDE_PREFIXES:-<none>}"
+  echo "LORA_FAIL_IF_NO_TARGET_MODULES=${LORA_FAIL_IF_NO_TARGET_MODULES}"
+  echo "FREEZE_MODULES=${FREEZE_MODULES}"
+  echo "PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-<none>}"
+  echo "RELOAD_MODULES=${RELOAD_MODULES:-<none>}"
   echo "PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS}"
   echo "PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS}"
   echo "PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS}"
