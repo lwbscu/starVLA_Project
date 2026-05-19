@@ -247,6 +247,8 @@ temp
 temp/*
 
 tmp
+AGENTS.md
+codex日志.md
 
 
 **/*.pt

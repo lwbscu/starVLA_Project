@@ -29,7 +29,7 @@ ACTION_DIM=${ACTION_DIM:-7}
 ACTION_HORIZON=${ACTION_HORIZON:-8}
 ACTION_QUERY_NUM=${ACTION_QUERY_NUM:-64}
 NUM_ACTIONS_CHUNK=${NUM_ACTIONS_CHUNK:-8}
-ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM:-1024}
+ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM:-auto}
 LORA_R=${LORA_R:-16}
 LORA_ALPHA=${LORA_ALPHA:-32}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
@@ -74,6 +74,58 @@ fi
 if [[ ! -f "${BASE_VLM}/config.json" ]]; then
   echo "BASE_VLM does not contain config.json: ${BASE_VLM}" >&2
   exit 2
+fi
+
+resolve_qwen_hidden_dim() {
+  "${STAR_VLA_PYTHON}" - "${BASE_VLM}/config.json" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+text_cfg = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
+vision_cfg = cfg.get("vision_config") if isinstance(cfg.get("vision_config"), dict) else {}
+candidates = (
+    ("hidden_size", cfg.get("hidden_size")),
+    ("text_config.hidden_size", text_cfg.get("hidden_size")),
+    ("vision_config.out_hidden_size", vision_cfg.get("out_hidden_size")),
+)
+
+for name, value in candidates:
+    if isinstance(value, int) and value > 0:
+        print(value)
+        raise SystemExit(0)
+
+raise SystemExit(
+    f"Cannot resolve Qwen hidden size from {config_path}; expected hidden_size, "
+    "text_config.hidden_size, or vision_config.out_hidden_size."
+)
+PY
+}
+
+QWEN_VL_HIDDEN_DIM="$(resolve_qwen_hidden_dim)"
+
+if [[ "${ADAPTER_HIDDEN_DIM}" == "auto" ]]; then
+  ADAPTER_HIDDEN_DIM="${QWEN_VL_HIDDEN_DIM}"
+fi
+
+if ! [[ "${ADAPTER_HIDDEN_DIM}" =~ ^[0-9]+$ ]] || (( ADAPTER_HIDDEN_DIM < 1 )); then
+  echo "ADAPTER_HIDDEN_DIM must be a positive integer or auto, got: ${ADAPTER_HIDDEN_DIM}" >&2
+  exit 2
+fi
+
+if [[ "${ROUTE}" == "p1_adapter" || "${ROUTE}" == "p3_lora_adapter" ]]; then
+  if [[ "${ADAPTER_HIDDEN_DIM}" != "${QWEN_VL_HIDDEN_DIM}" ]]; then
+    echo "Adapter routes require ADAPTER_HIDDEN_DIM to match BASE_VLM hidden size." >&2
+    echo "ROUTE=${ROUTE}" >&2
+    echo "BASE_VLM=${BASE_VLM}" >&2
+    echo "QWEN_VL_HIDDEN_DIM=${QWEN_VL_HIDDEN_DIM}" >&2
+    echo "ADAPTER_HIDDEN_DIM=${ADAPTER_HIDDEN_DIM}" >&2
+    echo "Set ADAPTER_HIDDEN_DIM=auto or export ADAPTER_HIDDEN_DIM=${QWEN_VL_HIDDEN_DIM}." >&2
+    exit 2
+  fi
 fi
 
 if [[ -n "${CALVIN_DATA_ROOT}" || -n "${CALVIN_DATA_MIX}" || -n "${CALVIN_DATA_NAME}" ]]; then
@@ -210,6 +262,7 @@ set +e
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
   echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
   echo "BASE_VLM=${BASE_VLM}"
+  echo "QWEN_VL_HIDDEN_DIM=${QWEN_VL_HIDDEN_DIM}"
   echo "ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
   echo "OBS_IMAGE_SIZE=${OBS_IMAGE_SIZE}"
   echo "ACTION_DIM=${ACTION_DIM}"
