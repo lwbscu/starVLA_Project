@@ -153,13 +153,11 @@ rollout 不是重放训练集；它是在 CALVIN 环境中评估当前 policy。
 
 ### 5.1 并发吃满 8 卡生成大量 rollout
 
-模型服务当前不是 tensor parallel；单个 server 传 `CUDA_VISIBLE_DEVICES=3,4,5,6,7` 不会自动把 9B 切到 5 张卡。要真正吃满 8 张 H200，使用 8 个单卡 rollout worker：
+模型服务当前不是 tensor parallel；单个 server 传 `CUDA_VISIBLE_DEVICES=3,4,5,6,7` 不会自动把 9B 切到 5 张卡。要真正吃满 8 张 H200，使用 8 个单卡 rollout worker。
 
-- Qwen3.5-0.8B：GPU 0，1 个 worker。
-- Qwen3.5-4B：GPU 1,2，2 个 worker。
-- Qwen3.5-9B：GPU 3,4,5,6,7，5 个 worker。
+当前 rollout 观察显示 Qwen3.5-4B 成功轨迹明显更多，因此默认把 8 张卡全部给 4B，优先生成可用于后训练的成功/失败混合轨迹。0.8B/9B 的失败轨迹保留作诊断，不作为主力 rollout 生产源。
 
-每个 worker 使用不同 `EVAL_SEQUENCE_INDEX_OFFSET`，同一模型内部不重复采样。默认每个模型生成 200 条 eval sequence 的 rollout；如需更大，调 `ROLLOUT_NUM_SEQUENCES_PER_MODEL`。
+每个 worker 使用不同 `EVAL_SEQUENCE_INDEX_OFFSET`，同一模型内部不重复采样。默认生成 500 条 4B eval sequence 的 rollout；如需更大，调 `ROLLOUT_NUM_SEQUENCES_PER_MODEL`。
 
 ```bash
 conda activate starVLA_qwen35
@@ -172,8 +170,8 @@ export ROLLOUT_PARQUET_PYTHON="${STAR_VLA_PYTHON}"
 
 export EVAL_BATCH_ROOT="${PROJECT_ROOT}/logs/20260519_h200_server1_pi_state_30k_v1"
 export ROLLOUT_OUTPUT_ROOT="${PROJECT_ROOT}/results/rollout"
-export ROLLOUT_RUN_NAME=pi_state_awac_parallel_200seq_v1
-export ROLLOUT_NUM_SEQUENCES_PER_MODEL=200
+export ROLLOUT_RUN_NAME=pi_state_4b_awac_parallel_500seq_v1
+export ROLLOUT_NUM_SEQUENCES_PER_MODEL=500
 
 export H200_CALVIN_EVAL_DATASET_PATH="${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset"
 export EVAL_SEQUENCES_PATH=examples/calvin/eval_files/eval_sequences.json
@@ -189,23 +187,74 @@ bash examples/calvin/eval_files/eval_h200_pi_state_rollout_parallel_8gpu.sh
 输出根目录：
 
 ```bash
-${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1
+${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1
 ```
 
 每个 worker 的 LeRobot rollout 在：
 
 ```bash
-${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_0p8b/shard_0/server1_pi_state/qwen35_0p8b/steps_30000/eval/rollout_lerobot
-${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_4b/shard_0/server1_pi_state/qwen35_4b/steps_30000/eval/rollout_lerobot
-${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_4b/shard_1/server1_pi_state/qwen35_4b/steps_30000/eval/rollout_lerobot
-${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/qwen35_9b/shard_*/server1_pi_state/qwen35_9b/steps_25000/eval/rollout_lerobot
+${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1/qwen35_4b/shard_*/server1_pi_state/qwen35_4b/steps_30000/eval/rollout_lerobot
 ```
 
 汇总文件：
 
 ```bash
-cat "${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/manifest.tsv"
-cat "${PROJECT_ROOT}/results/rollout/pi_state_awac_parallel_200seq_v1/summary.tsv"
+cat "${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1/manifest.tsv"
+cat "${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1/summary.tsv"
+```
+
+核查 rollout 是否完整：
+
+```bash
+export RUN_ROOT="${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1"
+
+cat "${RUN_ROOT}/manifest.tsv"
+cat "${RUN_ROOT}/summary.tsv"
+
+find "${RUN_ROOT}" -path "*/rollout_lerobot/meta/info.json" -print | sort
+find "${RUN_ROOT}" -path "*/rollout_lerobot/data/*.parquet" -print | wc -l
+
+"${STAR_VLA_PYTHON}" - "${RUN_ROOT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+root = Path(sys.argv[1])
+infos = sorted(root.glob("**/rollout_lerobot/meta/info.json"))
+if not infos:
+    raise SystemExit(f"no rollout_lerobot/meta/info.json under {root}")
+total_episodes = 0
+total_frames = 0
+bad = []
+for info_path in infos:
+    info = json.loads(info_path.read_text())
+    ds_root = info_path.parents[1]
+    parquets = sorted(ds_root.glob("data/**/*.parquet"))
+    total_episodes += int(info.get("total_episodes", 0))
+    total_frames += int(info.get("total_frames", 0))
+    if len(parquets) != int(info.get("total_episodes", 0)):
+        bad.append(f"{ds_root}: parquet_count={len(parquets)} total_episodes={info.get('total_episodes')}")
+    for pq in parquets[:3]:
+        df = pd.read_parquet(pq)
+        missing = {"state", "actions", "success", "done", "episode_success"} - set(df.columns)
+        if missing:
+            bad.append(f"{pq}: missing={sorted(missing)}")
+        if df["state"].iloc[0].shape[0] != 8:
+            bad.append(f"{pq}: state dim != 8")
+        if df["actions"].iloc[0].shape[0] != 7:
+            bad.append(f"{pq}: action dim != 7")
+if bad:
+    raise SystemExit("\n".join(bad))
+print(f"rollout_check=ok datasets={len(infos)} total_episodes={total_episodes} total_frames={total_frames}")
+PY
+```
+
+如果后续还想复查三模型分布，可覆盖 `ROLLOUT_WORKER_LAYOUT`：
+
+```bash
+export ROLLOUT_WORKER_LAYOUT=$'qwen35_0p8b server1_pi_state/qwen35_0p8b 0 6200\nqwen35_4b server1_pi_state/qwen35_4b 1 6210\nqwen35_4b server1_pi_state/qwen35_4b 2 6211\nqwen35_9b server1_pi_state/qwen35_9b 3 6220\nqwen35_9b server1_pi_state/qwen35_9b 4 6221\nqwen35_9b server1_pi_state/qwen35_9b 5 6222\nqwen35_9b server1_pi_state/qwen35_9b 6 6223\nqwen35_9b server1_pi_state/qwen35_9b 7 6224'
 ```
 
 ### 5.2 单进程小量诊断

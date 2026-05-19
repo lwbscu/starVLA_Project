@@ -4,10 +4,12 @@
 # The policy server is a single-process inference server. Giving one server a
 # comma-separated CUDA_VISIBLE_DEVICES list does not provide tensor parallelism;
 # it mainly uses the first visible GPU. To actually occupy 8 H200 GPUs, this
-# wrapper launches 8 independent rollout workers:
-#   - Qwen3.5-0.8B: 1 worker on GPU 0
-#   - Qwen3.5-4B:   2 workers on GPUs 1,2
-#   - Qwen3.5-9B:   5 workers on GPUs 3,4,5,6,7
+# wrapper launches 8 independent Qwen3.5-4B rollout workers by default,
+# because the current PI-State rollout inspection shows 4B is the useful
+# success-producing model for AWAC data collection.
+# Override ROLLOUT_WORKER_LAYOUT to bias GPUs toward the model that actually
+# produces useful rollouts. Each non-comment line is:
+#   model_tag job gpu port
 #
 # Each worker gets a disjoint EVAL_SEQUENCE_INDEX_OFFSET range for the same
 # model, writes into its own output subdirectory, and the wrapper merges
@@ -37,6 +39,21 @@ export ROLLOUT_PARQUET_PYTHON=${ROLLOUT_PARQUET_PYTHON:-"${STAR_VLA_PYTHON}"}
 export H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-"${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset"}
 export EVAL_SEQUENCES_PATH=${EVAL_SEQUENCES_PATH:-examples/calvin/eval_files/eval_sequences.json}
 
+if [[ -z "${ROLLOUT_WORKER_LAYOUT:-}" ]]; then
+ROLLOUT_WORKER_LAYOUT=$(cat <<'EOF'
+qwen35_4b server1_pi_state/qwen35_4b 0 6210
+qwen35_4b server1_pi_state/qwen35_4b 1 6211
+qwen35_4b server1_pi_state/qwen35_4b 2 6212
+qwen35_4b server1_pi_state/qwen35_4b 3 6213
+qwen35_4b server1_pi_state/qwen35_4b 4 6214
+qwen35_4b server1_pi_state/qwen35_4b 5 6215
+qwen35_4b server1_pi_state/qwen35_4b 6 6216
+qwen35_4b server1_pi_state/qwen35_4b 7 6217
+EOF
+)
+fi
+export ROLLOUT_WORKER_LAYOUT
+
 if [[ ! -x "${STAR_VLA_PYTHON}" ]]; then
   echo "STAR_VLA_PYTHON is not executable: ${STAR_VLA_PYTHON}" >&2
   exit 2
@@ -64,8 +81,8 @@ from pathlib import Path
 batch_root = Path(os.environ["EVAL_BATCH_ROOT"])
 eval_sequences_path = Path(os.environ["EVAL_SEQUENCES_PATH"])
 total_sequences = int(os.environ["ROLLOUT_NUM_SEQUENCES_PER_MODEL"])
-if total_sequences < 5:
-    raise SystemExit("ROLLOUT_NUM_SEQUENCES_PER_MODEL must be >= 5 to keep all 9B workers non-empty.")
+if total_sequences < 1:
+    raise SystemExit("ROLLOUT_NUM_SEQUENCES_PER_MODEL must be >= 1.")
 if not eval_sequences_path.is_file():
     raise SystemExit(f"EVAL_SEQUENCES_PATH not found: {eval_sequences_path}")
 with eval_sequences_path.open("r", encoding="utf-8") as f:
@@ -80,9 +97,25 @@ expected_min_steps = {
     "server1_pi_state/qwen35_4b": 30000,
     "server1_pi_state/qwen35_9b": 25000,
 }
+layout_jobs: set[str] = set()
+for raw_line in os.environ["ROLLOUT_WORKER_LAYOUT"].splitlines():
+    line = raw_line.split("#", 1)[0].strip()
+    if not line:
+        continue
+    parts = line.split()
+    if len(parts) != 4:
+        raise SystemExit(f"Bad ROLLOUT_WORKER_LAYOUT line, expected 4 fields: {raw_line!r}")
+    _model_tag, job, _gpu, _port = parts
+    if job not in expected_min_steps:
+        raise SystemExit(f"Unknown rollout job in ROLLOUT_WORKER_LAYOUT: {job!r}")
+    layout_jobs.add(job)
+if not layout_jobs:
+    raise SystemExit("ROLLOUT_WORKER_LAYOUT contains no workers.")
+
 pattern = re.compile(r"steps_(\d+)_pytorch_model\.pt$")
 errors = []
-for job, min_step in expected_min_steps.items():
+for job in sorted(layout_jobs):
+    min_step = expected_min_steps[job]
     job_root = batch_root / job
     if not job_root.is_dir():
         errors.append(f"{job}: missing job directory {job_root}")
@@ -105,7 +138,7 @@ if errors:
     raise SystemExit(2)
 print(
     "Parallel PI-State rollout preflight OK: "
-    f"sequences_per_model={total_sequences}, eval_sequences={len(sequences)}"
+    f"sequences_per_model={total_sequences}, jobs={len(layout_jobs)}, eval_sequences={len(sequences)}"
 )
 PY
 
@@ -119,6 +152,46 @@ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
 pids=()
 labels=()
 logs=()
+layout_rows=()
+declare -A shard_counts=()
+declare -A next_shard=()
+declare -A used_gpus=()
+declare -A used_ports=()
+
+while IFS= read -r raw_line; do
+  line="${raw_line%%#*}"
+  if [[ "${line}" =~ ^[[:space:]]*$ ]]; then
+    continue
+  fi
+  read -r model_tag job gpu port extra <<< "${line}"
+  if [[ -z "${model_tag:-}" || -z "${job:-}" || -z "${gpu:-}" || -z "${port:-}" || -n "${extra:-}" ]]; then
+    echo "Bad ROLLOUT_WORKER_LAYOUT line, expected: model_tag job gpu port" >&2
+    echo "line=${raw_line}" >&2
+    exit 2
+  fi
+  if [[ ! "${gpu}" =~ ^[0-9]+$ || ! "${port}" =~ ^[0-9]+$ ]]; then
+    echo "Bad ROLLOUT_WORKER_LAYOUT gpu/port, both must be integers: ${raw_line}" >&2
+    exit 2
+  fi
+  if [[ -n "${used_gpus[$gpu]:-}" ]]; then
+    echo "Duplicate GPU in ROLLOUT_WORKER_LAYOUT: gpu=${gpu}" >&2
+    exit 2
+  fi
+  if [[ -n "${used_ports[$port]:-}" ]]; then
+    echo "Duplicate port in ROLLOUT_WORKER_LAYOUT: port=${port}" >&2
+    exit 2
+  fi
+  used_gpus[$gpu]=1
+  used_ports[$port]=1
+  key="${model_tag}|${job}"
+  shard_counts[$key]=$(( ${shard_counts[$key]:-0} + 1 ))
+  layout_rows+=("${model_tag}"$'\t'"${job}"$'\t'"${gpu}"$'\t'"${port}")
+done <<< "${ROLLOUT_WORKER_LAYOUT}"
+
+if (( ${#layout_rows[@]} == 0 )); then
+  echo "ROLLOUT_WORKER_LAYOUT contains no workers." >&2
+  exit 2
+fi
 
 launch_worker() {
   local model_tag=$1
@@ -180,14 +253,14 @@ launch_worker() {
   echo "LAUNCHED ${model_tag}/shard_${shard_index}: gpu=${gpu} port=${port} offset=${offset} count=${count} log=${log_file}"
 }
 
-launch_worker qwen35_0p8b server1_pi_state/qwen35_0p8b 0 6200 0 1
-launch_worker qwen35_4b server1_pi_state/qwen35_4b 1 6210 0 2
-launch_worker qwen35_4b server1_pi_state/qwen35_4b 2 6211 1 2
-launch_worker qwen35_9b server1_pi_state/qwen35_9b 3 6220 0 5
-launch_worker qwen35_9b server1_pi_state/qwen35_9b 4 6221 1 5
-launch_worker qwen35_9b server1_pi_state/qwen35_9b 5 6222 2 5
-launch_worker qwen35_9b server1_pi_state/qwen35_9b 6 6223 3 5
-launch_worker qwen35_9b server1_pi_state/qwen35_9b 7 6224 4 5
+for row in "${layout_rows[@]}"; do
+  IFS=$'\t' read -r model_tag job gpu port <<< "${row}"
+  key="${model_tag}|${job}"
+  shard_index=${next_shard[$key]:-0}
+  shard_count=${shard_counts[$key]}
+  next_shard[$key]=$(( shard_index + 1 ))
+  launch_worker "${model_tag}" "${job}" "${gpu}" "${port}" "${shard_index}" "${shard_count}"
+done
 
 status=0
 for index in "${!pids[@]}"; do
