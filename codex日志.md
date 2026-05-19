@@ -798,3 +798,14 @@
 
 结果如何：
 快速训练成功：`logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/checkpoints/qwen35_oft_rollout_debug_100step/checkpoints/steps_100_pytorch_model.pt`。3 条 rollout 成功落盘：`rollout_lerobot_debug_3seq` 下共有 3 个 parquet、1080 帧、9 个可读 mp4；视频验证显示 CALVIN debug mp4 为 200x200@30fps，LeRobot image 为 200x200@10fps，wrist_image 为 84x84@10fps。AWAC reward 预处理成功：3 个 episode 写入 `step_reward/reward/done`，最后 8 帧 `done=True`。AWAC critic 1-step smoke 成功保存 `logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/awac_critic_smoke_1step/checkpoints/steps_1_critic.pt`，checkpoint 可读且包含 `critic/critic_target/value_net/awac/steps`。修改文件：`starVLA/model/modules/critic/awac_q_critic.py`、`starVLA/model/modules/critic/awac_v_network.py`、`starVLA/training/train_awac_critic.py`、`codex日志.md`。验证：`py_compile` 通过；`pytest` 未跑，因为 `starVLA_qwen35` 环境没有 pytest；训练/rollout/预处理/critic smoke 均实际运行。注意：100-step 模型 rollout 的 3 个任务均失败，说明该 quick checkpoint 只能用于链路与后训练数据调试，不代表策略质量达标。
+
+## 2026-05-19 16:28
+
+问题是什么：
+用户发现 `logs/log_20260519_1548_qwen35_oft_rollout_debug_100step` 用 TensorBoard 打开后没有内容。该 run 已有训练日志、rollout mp4 和评测结果，但目录下没有 `events.out.tfevents*` 文件。
+
+解决思路：
+先确认当前 run 只有 `terminal/train.log`、`mp4_3seq/results.json` 和 rollout meta，没有 TensorBoard event。新增 `examples/calvin/scripts/export_train_tensorboard.py`，从已完成的 rich 格式 `train.log` 中解析 100 个 step 的 `action_dit_loss/timing/learning_rate/epoch`，并把 eval success、chain success rate、rollout frame/episode/video 统计写入 `tensorboard/`。同时修改 `starVLA/training/train_starvla.py`，在 `trainer.use_tensorboard=true` 时原生写 SummaryWriter；修改 `run_calvin_qwen35_oft_smoke.sh` 和 `run_route_validation_train.sh`，默认把 event 写到 `${LOG_DIR}/tensorboard`。
+
+结果如何：
+已为现有 run 生成 `logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/tensorboard/events.out.tfevents.*`。验证通过：`tensorboard --inspect --logdir logs/log_20260519_1548_qwen35_oft_rollout_debug_100step` 能看到 `action_dit_loss`、`learning_rate/action_model`、`eval/avg_seq_len`、`eval/task_success/*`、`rollout/total_frames` 等 scalar；EventAccumulator 反查显示 `action_dit_loss` 共 100 个 step，最后一步为 `0.4107098877`。代码验证通过：`py_compile`、两个 shell 脚本 `bash -n`、`git diff --check`。

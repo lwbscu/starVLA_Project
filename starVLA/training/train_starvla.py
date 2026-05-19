@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from numbers import Number
 from pathlib import Path
 from typing import Tuple
 
@@ -31,6 +32,11 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoProcessor, get_scheduler
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
 
 # Local Modules
 from starVLA.dataloader import build_dataloader
@@ -117,6 +123,7 @@ class VLATrainer(TrainerUtils):
 
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
+        self.tensorboard_writer = None
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -147,6 +154,7 @@ class VLATrainer(TrainerUtils):
         )
 
         self._init_wandb()
+        self._init_tensorboard()
 
     def _calculate_total_batch_size(self):
         """Calculate global batch size."""
@@ -166,6 +174,51 @@ class VLATrainer(TrainerUtils):
                 entity=self.config.wandb_entity,
                 group="vla-train",
             )
+
+    def _init_tensorboard(self):
+        """Initialize TensorBoard logging when requested by config."""
+        use_tensorboard = self._select_bool("trainer.use_tensorboard", default=False)
+        if not use_tensorboard:
+            return
+        if SummaryWriter is None:
+            raise RuntimeError(
+                "trainer.use_tensorboard=true but torch.utils.tensorboard is unavailable. "
+                "Install tensorboard in the active environment or disable trainer.use_tensorboard."
+            )
+        if not self.accelerator.is_main_process:
+            return
+
+        log_dir = self._select_config("trainer.tensorboard_log_dir", default=None)
+        if log_dir in (None, "", "null"):
+            log_dir = os.path.join(self.config.output_dir, "tensorboard")
+        os.makedirs(log_dir, exist_ok=True)
+        self.tensorboard_writer = SummaryWriter(log_dir=log_dir)
+        logger.info(f"TensorBoard log dir: {log_dir}")
+
+    def _select_bool(self, key: str, default: bool = False) -> bool:
+        raw_value = self._select_config(key, default=default)
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            lowered = raw_value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        if isinstance(raw_value, Number):
+            return bool(raw_value)
+        raise ValueError(f"{key} must be a boolean value, got {raw_value!r}")
+
+    def _select_config(self, key: str, default=None):
+        if isinstance(self.config, AccessTrackedConfig):
+            node = self.config
+            for part in key.split("."):
+                try:
+                    node = getattr(node, part)
+                except AttributeError:
+                    return default
+            return node
+        return OmegaConf.select(self.config, key, default=default)
 
     def _save_initial_configs(self):
         """Save full config and training script at the very start of training."""
@@ -338,14 +391,36 @@ class VLATrainer(TrainerUtils):
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
-        if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
+        if self.completed_steps % self.config.trainer.logging_frequency == 0 and self.accelerator.is_main_process:
             last_lrs = self.lr_scheduler.get_last_lr()
             for i, group in enumerate(self.optimizer.param_groups):
                 group_name = group.get("name", str(i))
                 metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
             wandb.log(metrics, step=self.completed_steps)
+            self._log_tensorboard_metrics(metrics)
             logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
+
+    def _log_tensorboard_metrics(self, metrics):
+        """Write scalar metrics to TensorBoard."""
+        if self.tensorboard_writer is None:
+            return
+        for key, value in metrics.items():
+            scalar = self._coerce_scalar_metric(value)
+            if scalar is None:
+                continue
+            self.tensorboard_writer.add_scalar(key, scalar, self.completed_steps)
+        self.tensorboard_writer.flush()
+
+    @staticmethod
+    def _coerce_scalar_metric(value):
+        if isinstance(value, Number):
+            return float(value)
+        if isinstance(value, np.generic):
+            return float(value)
+        if torch.is_tensor(value) and value.numel() == 1:
+            return float(value.detach().cpu().item())
+        return None
 
     def _create_data_iterators(self):
         """Create data iterators."""
@@ -485,6 +560,9 @@ class VLATrainer(TrainerUtils):
             logger.info(f"Training complete. Final model saved at {final_checkpoint}")
 
         if self.accelerator.is_main_process:
+            if self.tensorboard_writer is not None:
+                self.tensorboard_writer.flush()
+                self.tensorboard_writer.close()
             wandb.finish()
 
         self.accelerator.wait_for_everyone()

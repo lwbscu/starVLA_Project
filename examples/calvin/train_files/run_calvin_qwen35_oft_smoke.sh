@@ -14,6 +14,8 @@ RUN_TS=${RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
 LOG_DIR=${LOG_DIR:-logs/log_${RUN_TS}_${RUN_ID}}
 CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_smoke.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
+USE_TENSORBOARD=${USE_TENSORBOARD:-true}
+TENSORBOARD_LOG_DIR=${TENSORBOARD_LOG_DIR:-"${LOG_DIR}/tensorboard"}
 
 mkdir -p "${LOG_DIR}"/{train,eval,terminal,mp4,configs,metrics,checkpoints}
 cp "${CONFIG_YAML}" "${LOG_DIR}/configs/"
@@ -25,6 +27,8 @@ cp "$0" "${LOG_DIR}/configs/"
   echo "CONFIG_YAML=${CONFIG_YAML}"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
+  echo "USE_TENSORBOARD=${USE_TENSORBOARD}"
+  echo "TENSORBOARD_LOG_DIR=${TENSORBOARD_LOG_DIR}"
 
   "${STAR_VLA_PYTHON}" -m accelerate.commands.launch \
     --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
@@ -34,6 +38,8 @@ cp "$0" "${LOG_DIR}/configs/"
     --trainer.max_train_steps "${MAX_TRAIN_STEPS:-1}" \
     --trainer.save_interval "${SAVE_INTERVAL:-1}" \
     --trainer.eval_interval "${EVAL_INTERVAL:-1000}" \
+    --trainer.use_tensorboard "${USE_TENSORBOARD}" \
+    --trainer.tensorboard_log_dir "${TENSORBOARD_LOG_DIR}" \
     --run_root_dir "${LOG_DIR}/checkpoints" \
     --run_id "${RUN_ID}"
 } 2>&1 | tee "${LOG_DIR}/terminal/train.log"

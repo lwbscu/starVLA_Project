@@ -21,6 +21,8 @@ LOGGING_FREQUENCY=${LOGGING_FREQUENCY:-}
 RUN_TS=${RUN_TS:-$(date +"%Y%m%d_%H%M%S")}
 RUN_ID=${RUN_ID:-route_validation_${ROUTE}_${MAX_TRAIN_STEPS}step}
 LOG_DIR=${LOG_DIR:-logs/route_validation/log_${RUN_TS}_${RUN_ID}}
+USE_TENSORBOARD=${USE_TENSORBOARD:-true}
+TENSORBOARD_LOG_DIR=${TENSORBOARD_LOG_DIR:-"${LOG_DIR}/tensorboard"}
 CONFIG_YAML=${CONFIG_YAML:-examples/calvin/train_files/starvla_train_calvin_qwen35_oft_smoke.yaml}
 ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-starVLA/config/deepseeds/deepspeed_zero2_route_validation.yaml}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-"$(conda info --base)/envs/starVLA_qwen35/bin/python"}
@@ -70,6 +72,7 @@ normalize_bool_value() {
 
 INCLUDE_STATE="$(normalize_bool_value INCLUDE_STATE "${INCLUDE_STATE}")" || exit 2
 ADAPTER_USE_PROPRIO="$(normalize_bool_value ADAPTER_USE_PROPRIO "${ADAPTER_USE_PROPRIO}")" || exit 2
+USE_TENSORBOARD="$(normalize_bool_value USE_TENSORBOARD "${USE_TENSORBOARD}")" || exit 2
 
 if [[ -z "${CALVIN_DATA_ROOT}" && -z "${CALVIN_DATA_MIX}" && -z "${CALVIN_DATA_NAME}" ]]; then
   H200_CANDIDATE_ROOT=${H200_CALVIN_DATA_ROOT:-${H200_DEFAULT_CALVIN_DATA_ROOT}}
@@ -244,6 +247,8 @@ COMMON_ARGS=(
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}"
   --trainer.save_interval "${SAVE_INTERVAL}"
   --trainer.eval_interval "${EVAL_INTERVAL}"
+  --trainer.use_tensorboard "${USE_TENSORBOARD}"
+  --trainer.tensorboard_log_dir "${TENSORBOARD_LOG_DIR}"
   --run_root_dir "${LOG_DIR}/checkpoints"
   --run_id "${RUN_ID}"
 )
@@ -352,6 +357,8 @@ set +e
   echo "CHECKPOINT_KEEP_LATEST=${CHECKPOINT_KEEP_LATEST:-<disabled>}"
   echo "CHECKPOINT_KEEP_STEPS=${CHECKPOINT_KEEP_STEPS:-<disabled>}"
   echo "LOGGING_FREQUENCY=${LOGGING_FREQUENCY:-<config_yaml>}"
+  echo "USE_TENSORBOARD=${USE_TENSORBOARD}"
+  echo "TENSORBOARD_LOG_DIR=${TENSORBOARD_LOG_DIR}"
   echo "ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
   echo "STAR_VLA_PYTHON=${STAR_VLA_PYTHON}"
   echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}"
