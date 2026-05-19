@@ -432,6 +432,15 @@ FAST_STEPS=10000
 DECISION_STEPS=30000
 ```
 
+如果时间紧、只需要直接产出 30000-step checkpoint，可以跳过 CALVIN eval 和前两段探索，只跑 `decision30k`，并每 1000 steps 保存一次：
+
+```bash
+export EVAL_ENABLED=0
+export H200_RUN_STAGES=decision30k
+export DECISION_STEPS=30000
+export DECISION_SAVE_INTERVAL=1000
+```
+
 ### Server-1 正式跑 P0 + P4
 
 ```bash

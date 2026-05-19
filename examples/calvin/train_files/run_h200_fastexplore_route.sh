@@ -70,6 +70,7 @@ export EVAL_UNNORM_KEY=${EVAL_UNNORM_KEY:-franka}
 export SMOKE_STEPS=${SMOKE_STEPS:-1000}
 export FAST_STEPS=${FAST_STEPS:-10000}
 export DECISION_STEPS=${DECISION_STEPS:-30000}
+export H200_RUN_STAGES=${H200_RUN_STAGES:-"smoke1k fast10k decision30k"}
 export SMOKE_SAVE_INTERVAL=${SMOKE_SAVE_INTERVAL:-${SMOKE_STEPS}}
 export FAST_SAVE_INTERVAL=${FAST_SAVE_INTERVAL:-5000}
 export DECISION_SAVE_INTERVAL=${DECISION_SAVE_INTERVAL:-10000}
@@ -260,6 +261,41 @@ echo "H200_CALVIN_EVAL_DATASET_PATH=${H200_CALVIN_EVAL_DATASET_PATH:-<disabled>}
 echo "SMOKE_STEPS=${SMOKE_STEPS}"
 echo "FAST_STEPS=${FAST_STEPS}"
 echo "DECISION_STEPS=${DECISION_STEPS}"
+echo "H200_RUN_STAGES=${H200_RUN_STAGES}"
+
+should_run_stage() {
+  local stage_name=$1
+  local selected_stage
+
+  for selected_stage in ${H200_RUN_STAGES}; do
+    if [[ "${selected_stage}" == "${stage_name}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_run_stages() {
+  local selected_stage
+  local stage_count=0
+
+  for selected_stage in ${H200_RUN_STAGES}; do
+    stage_count=$((stage_count + 1))
+    case "${selected_stage}" in
+      smoke1k|fast10k|decision30k)
+        ;;
+      *)
+        echo "Unknown H200_RUN_STAGES entry: ${selected_stage}. Allowed: smoke1k fast10k decision30k" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [[ "${stage_count}" -eq 0 ]]; then
+    echo "H200_RUN_STAGES must select at least one stage. Allowed: smoke1k fast10k decision30k" >&2
+    return 2
+  fi
+}
 
 ensure_eval_port_free() {
   local port=$1
@@ -489,12 +525,26 @@ run_stage() {
   echo "===== DONE stage=${stage_name} route=${ROUTE} ckpt=${ckpt_path} ====="
 }
 
+validate_run_stages
+
 if [[ "${EVAL_ENABLED}" == "1" ]]; then
   ensure_eval_port_free "${EVAL_PORT}"
 fi
 
-run_stage smoke1k "${SMOKE_STEPS}" "${SMOKE_SAVE_INTERVAL}" "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
-run_stage fast10k "${FAST_STEPS}" "${FAST_SAVE_INTERVAL}" "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
-run_stage decision30k "${DECISION_STEPS}" "${DECISION_SAVE_INTERVAL}" "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${DECISION_EVAL_SEQUENCES}"
+if should_run_stage smoke1k; then
+  run_stage smoke1k "${SMOKE_STEPS}" "${SMOKE_SAVE_INTERVAL}" "${SMOKE_WORKERS:-8}" "${SMOKE_EVAL_SEQUENCES}"
+else
+  echo "===== SKIP stage=smoke1k route=${ROUTE} H200_RUN_STAGES=${H200_RUN_STAGES} ====="
+fi
+if should_run_stage fast10k; then
+  run_stage fast10k "${FAST_STEPS}" "${FAST_SAVE_INTERVAL}" "${FAST_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${FAST_EVAL_SEQUENCES}"
+else
+  echo "===== SKIP stage=fast10k route=${ROUTE} H200_RUN_STAGES=${H200_RUN_STAGES} ====="
+fi
+if should_run_stage decision30k; then
+  run_stage decision30k "${DECISION_STEPS}" "${DECISION_SAVE_INTERVAL}" "${DECISION_WORKERS:-${DATALOADER_NUM_WORKERS}}" "${DECISION_EVAL_SEQUENCES}"
+else
+  echo "===== SKIP stage=decision30k route=${ROUTE} H200_RUN_STAGES=${H200_RUN_STAGES} ====="
+fi
 
 echo "PIPELINE_DONE route=${ROUTE} log=${PIPELINE_LOG}"
