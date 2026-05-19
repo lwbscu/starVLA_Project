@@ -16,6 +16,12 @@ calvin_data_root=${calvin_data_root:-/inspire/qb-ilm2/project/26summer-camp-10/p
 data_mix=${data_mix:-calvin_abc_d_h200}
 include_state=${include_state:-true}
 state_dim=${state_dim:-8}
+compute_rewards_on_the_fly=${compute_rewards_on_the_fly:-false}
+success_column=${success_column:-success}
+assume_success_if_missing=${assume_success_if_missing:-false}
+step_penalty=${step_penalty:--1.0}
+success_reward=${success_reward:-0.0}
+failure_reward=${failure_reward:--3000.0}
 bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/steps_30000_pytorch_model.pt}
 critic_checkpoint=${critic_checkpoint:-./logs/awac_calvin_critic/checkpoints/steps_50000_critic.pt}
 run_root_dir=${run_root_dir:-logs}
@@ -37,6 +43,12 @@ accelerate launch \
   --datasets.awac_data.data_root_dir "${calvin_data_root}" \
   --datasets.awac_data.data_mix "${data_mix}" \
   --datasets.awac_data.include_state "${include_state}" \
+  --datasets.awac_data.compute_rewards_on_the_fly "${compute_rewards_on_the_fly}" \
+  --datasets.awac_data.success_column "${success_column}" \
+  --datasets.awac_data.assume_success_if_missing "${assume_success_if_missing}" \
+  --datasets.awac_data.step_penalty "${step_penalty}" \
+  --datasets.awac_data.success_reward "${success_reward}" \
+  --datasets.awac_data.failure_reward "${failure_reward}" \
   --trainer.pretrained_checkpoint "${bc_checkpoint}" \
   --trainer.awac_critic_checkpoint "${critic_checkpoint}" \
   --trainer.actor_max_train_steps 30000 \

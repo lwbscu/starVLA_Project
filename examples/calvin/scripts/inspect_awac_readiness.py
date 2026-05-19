@@ -78,6 +78,22 @@ def parse_args() -> argparse.Namespace:
         help="Require step_reward/reward/done columns for immediate critic training.",
     )
     parser.add_argument(
+        "--allow-on-the-fly-rewards",
+        action="store_true",
+        help=(
+            "Accept missing step_reward/reward/done when training will set "
+            "datasets.awac_data.compute_rewards_on_the_fly=true."
+        ),
+    )
+    parser.add_argument(
+        "--assume-success-if-missing",
+        action="store_true",
+        help=(
+            "For read-only inspection of verified all-success demo data, accept missing success columns "
+            "when on-the-fly rewards will assume success."
+        ),
+    )
+    parser.add_argument(
         "--require-rollout",
         action="store_true",
         help="Treat missing rollout diagnostics as a failure instead of a warning.",
@@ -420,6 +436,8 @@ def check_dataset(
     gamma: float,
     sample_limit: int,
     require_preprocessed: bool,
+    allow_on_the_fly_rewards: bool,
+    assume_success_if_missing: bool,
 ) -> None:
     section = "dataset"
     try:
@@ -574,6 +592,17 @@ def check_dataset(
             "success labels",
             f"success column exists in all sampled parquets; sampled_successes={successes}/{success_files}",
         )
+    elif assume_success_if_missing:
+        report.add(
+            section,
+            "PASS",
+            "success labels",
+            (
+                "success column missing in "
+                f"{len(sampled) - success_files}/{len(sampled)} sampled parquets, "
+                "but --assume-success-if-missing was explicitly set for verified all-success demos"
+            ),
+        )
     else:
         report.add(
             section,
@@ -589,6 +618,17 @@ def check_dataset(
             "PASS",
             "AWAC reward preprocessing",
             f"step_reward/reward/done valid for sampled parquets; H={horizon}, gamma={gamma}",
+        )
+    elif allow_on_the_fly_rewards and (success_files == len(sampled) or assume_success_if_missing):
+        report.add(
+            section,
+            "PASS",
+            "AWAC reward preprocessing",
+            (
+                "step_reward/reward/done columns are not required on disk because "
+                "datasets.awac_data.compute_rewards_on_the_fly=true will compute "
+                f"R_chunk and last-H done at load time; H={horizon}, gamma={gamma}"
+            ),
         )
     else:
         status = "FAIL" if require_preprocessed else "WARN"
@@ -830,6 +870,8 @@ def render_markdown(args: argparse.Namespace, report: Report) -> str:
         f"- job_expected_steps: `{parse_job_expected_steps(args.job_expected_step)}`",
         f"- H/gamma: `{args.action_horizon}` / `{args.gamma}`",
         f"- require_preprocessed: `{args.require_preprocessed}`",
+        f"- allow_on_the_fly_rewards: `{args.allow_on_the_fly_rewards}`",
+        f"- assume_success_if_missing: `{args.assume_success_if_missing}`",
         f"- require_rollout: `{args.require_rollout}`",
         "",
         "## Summary",
@@ -854,8 +896,8 @@ def render_markdown(args: argparse.Namespace, report: Report) -> str:
                 "## Blocking Interpretation",
                 "",
                 "- 有 `FAIL` 就不要直接开 AWAC critic/actor；先按失败项补齐。",
-                "- `success` 缺失时，先补标签再跑 `prepare_awac_rewards.py`，不要用默认全成功绕过。",
-                "- `step_reward/reward/done` 缺失时，说明还没完成 AWAC 预处理，critic 训练会读到错误/零奖励。",
+                "- `success` 缺失时，先补标签再跑 `prepare_awac_rewards.py`；只有已确认全成功 demo 且显式启用只读即时计算时，才可用 `--assume-success-if-missing`。",
+                "- `step_reward/reward/done` 缺失时，要么完成 AWAC 预处理，要么显式设置 `datasets.awac_data.compute_rewards_on_the_fly=true`；否则 critic 会读到错误/零奖励。",
                 "- rollout parquet 若缺 `success`，不能直接用默认 `prepare_awac_rewards.py`；需要补标准成功列或显式传 `--success_column`。",
                 "",
             ]
@@ -897,6 +939,8 @@ def main() -> int:
         gamma=args.gamma,
         sample_limit=args.sample_parquets,
         require_preprocessed=args.require_preprocessed,
+        allow_on_the_fly_rewards=args.allow_on_the_fly_rewards,
+        assume_success_if_missing=args.assume_success_if_missing,
     )
     check_rollout(
         report,
@@ -929,6 +973,8 @@ def main() -> int:
                 "jobs": jobs,
                 "rollout_root": str(rollout_root) if rollout_root else None,
                 "require_preprocessed": args.require_preprocessed,
+                "allow_on_the_fly_rewards": args.allow_on_the_fly_rewards,
+                "assume_success_if_missing": args.assume_success_if_missing,
                 "require_rollout": args.require_rollout,
             },
             "status_counts": report.status_counts(),

@@ -273,6 +273,24 @@ python examples/calvin/scripts/prepare_awac_rewards.py \
 
 **注意**：改 `H` 或 `γ` 后需重新跑预处理；训练 yaml 里 `reward_is_chunk_return: true`（默认）表示 dataloader **不再对 H 步求和**。
 
+### 3.6 磁盘不足时的只读数据模式
+
+如果完整复制 public 数据集会超出个人目录配额，可以不写 parquet 工作副本，改为训练时即时计算 AWAC reward/done：
+
+```bash
+export calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
+export data_mix=calvin_abc_d_h200
+export compute_rewards_on_the_fly=true
+export assume_success_if_missing=true
+```
+
+语义仍与第 2 节保持一致：
+
+- `reward` 在 dataloader 内按 \(R_{chunk}(t)\) 计算。
+- `done` 在 dataloader 内按最后 H 帧为 True 计算。
+- 如果 parquet 缺 `success`，只有在确认全是成功 expert demo 时才允许 `assume_success_if_missing=true`。
+- 该模式不修改 public 数据，也不创建完整 parquet 副本。
+
 ---
 
 ## 4. Critic 训练

@@ -7,9 +7,10 @@ Offline AWAC post-training for StarVLA `QwenPI` policies on Calvin LeRobot data.
 1. **BC checkpoint** from `train_starvla.py` (Phase 0).
 2. **LeRobot Calvin dataset** with terminal `success` (and optional `done`) in each episode parquet.
 3. Copy `modality.json` (or `modality_awac.json`) into `<dataset>/meta/modality.json`.
-4. **Run reward preprocessing** (below) before AWAC training.
+4. Provide AWAC rewards either by **offline preprocessing** or by the explicit
+   **read-only on-the-fly mode** below.
 
-### Step 0 — Reward / done preprocessing (required)
+### Step 0A — Reward / done preprocessing
 
 Raw Calvin LeRobot data usually only has **episode-end `success`**. Run:
 
@@ -37,6 +38,26 @@ Defaults: `step_penalty=-1`, `success_reward=0`, `failure_reward=-3000`, `H=8`, 
 Implementation: [`starVLA/dataloader/awac_reward_preprocessing.py`](../../../starVLA/dataloader/awac_reward_preprocessing.py).
 
 The AWAC dataloader reads `reward` at index `t` as **precomputed** \(R_{chunk}(t)\) (no second sum over the chunk). Set `datasets.awac_data.reward_is_chunk_return: false` only if `reward` stores per-step values instead.
+
+### Step 0B — Read-only on-the-fly rewards
+
+If the Calvin dataset is too large to copy, keep the public dataset read-only and
+make the dataloader compute `reward` and `done` at load time:
+
+```bash
+export calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
+export data_mix=calvin_abc_d_h200
+export compute_rewards_on_the_fly=true
+export assume_success_if_missing=true
+```
+
+Use `assume_success_if_missing=true` only for verified expert demos where every
+episode is known to be successful. Otherwise, keep it false; missing `success`
+will raise an error instead of silently fabricating labels.
+
+This mode uses the same defaults as preprocessing (`H=8`, `gamma=0.996`,
+`step_penalty=-1`, `success_reward=0`, `failure_reward=-3000`) and does not
+modify parquet files.
 
 ## Training (two phases)
 

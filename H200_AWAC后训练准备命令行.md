@@ -123,6 +123,48 @@ cat "$SUCCESS_OUT/success_stamp_write.log"
 
 如果不能确认全是成功 demo，不要执行 `--all-success-demo --write`；必须先拿到源成功标签。执行后，官方源数据 `${AWAC_SOURCE_DATASET_ROOT}` 不变，后续只使用 `${AWAC_WORK_DATASET_ROOT}`。
 
+### 3.1 磁盘不足：不复制数据，训练时即时计算 reward/done
+
+如果个人目录放不下完整 parquet 工作副本，可以不执行第 3 节和第 4 节的写盘预处理，改用 dataloader 的显式即时计算模式：
+
+- 源数据仍从 public 目录只读加载。
+- 不向 parquet 写 `success`、`step_reward`、`reward`、`done`。
+- 训练时设置 `compute_rewards_on_the_fly=true`，按同一套 `H=8 / gamma=0.996 / reward=chunk return / done=最后 H 帧` 逻辑在内存里计算。
+- 如果源数据没有 `success` 列，只有在确认全是成功 expert demo 时，才设置 `assume_success_if_missing=true`。
+
+只读 readiness 检查：
+
+```bash
+export OUT="logs/awac_readiness_onfly_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUT"
+
+"${STAR_VLA_PYTHON}" examples/calvin/scripts/inspect_awac_readiness.py \
+  --batch-root "${PI_STATE_BATCH_ROOT}" \
+  --data-root "${AWAC_SOURCE_DATA_ROOT}" \
+  --dataset-name "${H200_CALVIN_DATA_NAME}" \
+  --data-mix "${H200_CALVIN_DATA_MIX}" \
+  --expected-step 30000 \
+  --job-expected-step server1_pi_state/qwen35_9b=25000 \
+  --allow-on-the-fly-rewards \
+  --assume-success-if-missing \
+  --json-out "$OUT/awac_readiness.json" \
+  > "$OUT/awac_readiness.md"
+
+echo "inspect_status=$?"
+sed -n '1,300p' "$OUT/awac_readiness.md"
+```
+
+后续训练时用 public 源数据根目录，并显式打开即时计算：
+
+```bash
+export calvin_data_root="${AWAC_SOURCE_DATA_ROOT}"
+export data_mix="${H200_CALVIN_DATA_MIX}"
+export compute_rewards_on_the_fly=true
+export assume_success_if_missing=true
+```
+
+这条路线不修改官方数据，也不创建完整 parquet 副本；代价是每次 dataloader 读取 transition 时会多做少量 reward/done 计算。
+
 ## 4. 写入 AWAC reward/done
 
 先 dry-run：

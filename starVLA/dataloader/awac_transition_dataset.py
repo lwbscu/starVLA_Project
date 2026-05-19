@@ -80,6 +80,72 @@ def read_transition_done(
     return float(next_index >= traj_len - 1)
 
 
+def read_episode_success(
+    traj_df,
+    success_column: str = "success",
+    assume_success_if_missing: bool = False,
+) -> bool:
+    if success_column not in traj_df.columns:
+        if assume_success_if_missing:
+            return True
+        raise KeyError(
+            f"Column `{success_column}` not found in trajectory parquet. "
+            "Set datasets.awac_data.assume_success_if_missing=true only for verified all-success demos, "
+            "or provide explicit success labels."
+        )
+    if len(traj_df) == 0:
+        return False
+    value = traj_df[success_column].iloc[-1]
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return _scalar_reward(value) > 0.5
+
+
+def compute_awac_step_reward(
+    frame_index: int,
+    traj_len: int,
+    episode_success: bool,
+    step_penalty: float = -1.0,
+    success_reward: float = 0.0,
+    failure_reward: float = -3000.0,
+) -> float:
+    if traj_len <= 0:
+        return 0.0
+    if frame_index >= traj_len - 1:
+        return float(success_reward if episode_success else failure_reward)
+    return float(step_penalty)
+
+
+def compute_awac_chunk_return(
+    start_index: int,
+    traj_len: int,
+    horizon: int,
+    gamma: float,
+    episode_success: bool,
+    step_penalty: float = -1.0,
+    success_reward: float = 0.0,
+    failure_reward: float = -3000.0,
+) -> float:
+    if traj_len <= 0:
+        return 0.0
+    total = 0.0
+    max_offset = min(int(horizon) - 1, traj_len - 1 - int(start_index))
+    for offset in range(max_offset + 1):
+        total += (float(gamma) ** offset) * compute_awac_step_reward(
+            frame_index=start_index + offset,
+            traj_len=traj_len,
+            episode_success=episode_success,
+            step_penalty=step_penalty,
+            success_reward=success_reward,
+            failure_reward=failure_reward,
+        )
+    return float(total)
+
+
+def compute_awac_done(base_index: int, traj_len: int, horizon: int) -> float:
+    return float(int(base_index) >= max(0, int(traj_len) - int(horizon)))
+
+
 def _align_state_dim(state: np.ndarray, target_dim: int | None, dataset_name: str) -> np.ndarray:
     if target_dim is None or target_dim <= 0:
         return state
@@ -138,6 +204,13 @@ class AWACTransitionDataset(Dataset):
         reward_column: str = "reward",
         done_column: str = "done",
         reward_is_chunk_return: bool = True,
+        compute_rewards_on_the_fly: bool = False,
+        success_column: str = "success",
+        assume_success_if_missing: bool = False,
+        gamma: float = 0.996,
+        step_penalty: float = -1.0,
+        success_reward: float = 0.0,
+        failure_reward: float = -3000.0,
     ):
         self.base_dataset = base_dataset
         self.action_horizon = int(action_horizon)
@@ -146,6 +219,13 @@ class AWACTransitionDataset(Dataset):
         self.reward_column = reward_column
         self.done_column = done_column
         self.reward_is_chunk_return = reward_is_chunk_return
+        self.compute_rewards_on_the_fly = compute_rewards_on_the_fly
+        self.success_column = success_column
+        self.assume_success_if_missing = assume_success_if_missing
+        self.gamma = float(gamma)
+        self.step_penalty = float(step_penalty)
+        self.success_reward = float(success_reward)
+        self.failure_reward = float(failure_reward)
         self._reward_warning_issued = False
 
         self.valid_steps: list[tuple[int, int]] = []
@@ -161,6 +241,13 @@ class AWACTransitionDataset(Dataset):
                 f"{len(self.valid_steps)}/{len(base_dataset.all_steps)} valid transitions "
                 f"(H={self.action_horizon})"
             )
+            if self.compute_rewards_on_the_fly:
+                print(
+                    f"[AWAC] {base_dataset.dataset_name}: computing reward/done on the fly "
+                    f"(H={self.action_horizon}, gamma={self.gamma}, "
+                    f"success_column={self.success_column}, "
+                    f"assume_success_if_missing={self.assume_success_if_missing})"
+                )
 
     def __len__(self) -> int:
         return len(self.valid_steps)
@@ -179,7 +266,11 @@ class AWACTransitionDataset(Dataset):
         next_sample = _pack_observation(nxt, self.base_dataset, self.include_state, self.state_dim)
 
         traj_df = self.base_dataset.get_trajectory_data(trajectory_id)
-        if self.reward_column not in traj_df.columns and not self._reward_warning_issued:
+        if (
+            self.reward_column not in traj_df.columns
+            and not self.compute_rewards_on_the_fly
+            and not self._reward_warning_issued
+        ):
             warnings.warn(
                 f"Column `{self.reward_column}` not found in trajectory parquet; "
                 "using zero rewards. Add per-step rewards for AWAC.",
@@ -189,20 +280,41 @@ class AWACTransitionDataset(Dataset):
 
         traj_idx = self.base_dataset.get_trajectory_index(trajectory_id)
         traj_len = int(self.base_dataset.trajectory_lengths[traj_idx])
-        reward = read_transition_reward(
-            traj_df,
-            base_index,
-            horizon,
-            reward_column=self.reward_column,
-            reward_is_chunk_return=self.reward_is_chunk_return,
-        )
-        done = read_transition_done(
-            traj_df,
-            base_index,
-            next_index,
-            traj_len,
-            done_column=self.done_column,
-        )
+        if self.compute_rewards_on_the_fly and self.reward_column not in traj_df.columns:
+            episode_success = read_episode_success(
+                traj_df,
+                success_column=self.success_column,
+                assume_success_if_missing=self.assume_success_if_missing,
+            )
+            reward = compute_awac_chunk_return(
+                start_index=base_index,
+                traj_len=traj_len,
+                horizon=horizon,
+                gamma=self.gamma,
+                episode_success=episode_success,
+                step_penalty=self.step_penalty,
+                success_reward=self.success_reward,
+                failure_reward=self.failure_reward,
+            )
+        else:
+            reward = read_transition_reward(
+                traj_df,
+                base_index,
+                horizon,
+                reward_column=self.reward_column,
+                reward_is_chunk_return=self.reward_is_chunk_return,
+            )
+
+        if self.compute_rewards_on_the_fly and self.done_column not in traj_df.columns:
+            done = compute_awac_done(base_index, traj_len, horizon)
+        else:
+            done = read_transition_done(
+                traj_df,
+                base_index,
+                next_index,
+                traj_len,
+                done_column=self.done_column,
+            )
 
         transition = {
             "image": sample["image"],
@@ -245,7 +357,12 @@ class AWACTransitionMixtureDataset(Dataset):
         return self.datasets[dataset_idx][local_index]
 
 
-def get_awac_dataset(data_cfg, action_horizon: int, state_dim: int | None = None) -> Dataset:
+def get_awac_dataset(
+    data_cfg,
+    action_horizon: int,
+    state_dim: int | None = None,
+    gamma: float | None = None,
+) -> Dataset:
     data_root_dir = Path(data_cfg.data_root_dir)
     data_mix = data_cfg.data_mix
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
@@ -253,6 +370,13 @@ def get_awac_dataset(data_cfg, action_horizon: int, state_dim: int | None = None
     reward_column = data_cfg.get("reward_column", "reward")
     done_column = data_cfg.get("done_column", "done")
     reward_is_chunk_return = data_cfg.get("reward_is_chunk_return", True) not in ["False", False]
+    compute_rewards_on_the_fly = data_cfg.get("compute_rewards_on_the_fly", False) not in ["False", False]
+    success_column = data_cfg.get("success_column", "success")
+    assume_success_if_missing = data_cfg.get("assume_success_if_missing", False) not in ["False", False]
+    gamma = float(gamma if gamma is not None else data_cfg.get("gamma", 0.996))
+    step_penalty = float(data_cfg.get("step_penalty", -1.0))
+    success_reward = float(data_cfg.get("success_reward", 0.0))
+    failure_reward = float(data_cfg.get("failure_reward", -3000.0))
 
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     transition_sets: list[AWACTransitionDataset] = []
@@ -274,6 +398,13 @@ def get_awac_dataset(data_cfg, action_horizon: int, state_dim: int | None = None
                 reward_column=reward_column,
                 done_column=done_column,
                 reward_is_chunk_return=reward_is_chunk_return,
+                compute_rewards_on_the_fly=compute_rewards_on_the_fly,
+                success_column=success_column,
+                assume_success_if_missing=assume_success_if_missing,
+                gamma=gamma,
+                step_penalty=step_penalty,
+                success_reward=success_reward,
+                failure_reward=failure_reward,
             )
         )
         weights.append(float(d_weight))
@@ -287,7 +418,12 @@ def build_awac_dataloader(cfg):
     data_cfg = cfg.datasets.awac_data
     action_horizon = int(cfg.framework.action_model.action_horizon)
     state_dim = int(cfg.framework.action_model.state_dim) if cfg.framework.action_model.get("state_dim", None) else None
-    dataset = get_awac_dataset(data_cfg, action_horizon=action_horizon, state_dim=state_dim)
+    dataset = get_awac_dataset(
+        data_cfg,
+        action_horizon=action_horizon,
+        state_dim=state_dim,
+        gamma=float(cfg.awac.gamma),
+    )
     return DataLoader(
         dataset,
         batch_size=data_cfg.per_device_batch_size,

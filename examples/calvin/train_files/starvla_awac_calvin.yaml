@@ -56,6 +56,12 @@ datasets:
     reward_column: reward
     done_column: done
     reward_is_chunk_return: true
+    compute_rewards_on_the_fly: false
+    success_column: success
+    assume_success_if_missing: false
+    step_penalty: -1.0
+    success_reward: 0.0
+    failure_reward: -3000.0
     video_backend: torchvision_av
 
 awac:
