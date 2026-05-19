@@ -4,6 +4,8 @@
 
 **前置条件**：已完成 BC 训练（`train_starvla.py`），得到 `QwenPI` checkpoint。
 
+**跑实验 / 排错**：请先读 **[§2 核心不可改逻辑](#2-核心不可改逻辑debug-必读)**，再改 yaml、shell 或训练代码。
+
 ---
 
 ## 1. 原理简述
@@ -28,7 +30,7 @@ Actor 主干仍为 `QwenPI`（VLM + Layerwise flow-matching action head）；Cri
   y = R_{chunk}(t) + (1 - \text{done}) \cdot \gamma^{H} \cdot \min_{e} Q_{\text{target}}(s', a')
   \]
 
-  - `R_chunk(t)`：数据预处理写入 parquet 的 `reward` 列（见第 2 节）。  
+  - `R_chunk(t)`：数据预处理写入 parquet 的 `reward` 列（见第 3 节）。  
   - `γ`：默认 `0.996`；`H`：`action_horizon`（Calvin 默认 8）。  
   - `a'`：数据集行为动作（下一 chunk）。  
   - Target 网络：Polyak 软更新（`polyak_tau=0.005`）。
@@ -50,15 +52,167 @@ w = \mathrm{clip}\Big(\exp\big(\frac{A}{\lambda}\big),\; w_{\max}\Big)
 
 ---
 
-## 2. 数据处理
+## 2. 核心不可改逻辑（Debug 必读）
 
-### 2.1 原始数据要求
+本节写给**负责跑通 / 排错的同学**：下面约定是整条 AWAC 链路的契约。改路径、改步数、改学习率可以；**除非你愿意连同预处理、Critic、Actor 三处一起重推公式并重训，否则不要动这些逻辑。**
+
+### 2.1 三处必须对齐的超参：`H`、`γ`、reward 语义
+
+| 位置 | 字段 | 必须一致 |
+|------|------|----------|
+| `prepare_awac_rewards.py` | `--action_horizon`、`--gamma` | 基准 |
+| `starvla_awac_calvin.yaml` | `framework.action_model.action_horizon`、`awac.gamma` | 与预处理相同 |
+| Critic `td_loss` | `gamma ** action_horizon` | 自举项是 **γ^H**，不是 γ |
+
+**不可改语义**：
+
+- parquet 里 **`reward` 列 = 已算好的 chunk 折扣回报** \(R_{chunk}(t)\)（见 `awac_reward_preprocessing.compute_discounted_chunk_return`）。
+- 训练时 `datasets.awac_data.reward_is_chunk_return: true`（默认）→ dataloader **只读** `reward.iloc[t]`，**禁止**再对 H 步求和（见 `read_transition_reward`）。
+- 若把 `reward_is_chunk_return` 改成 `false` 而 parquet 仍是预处理后的 `reward`，会**重复折扣**，Q 目标错误。
+
+**`done` 语义**（`compute_done_flags`）：
+
+- 每个 episode **最后 H 帧** `done=True`，与「chunk 末端是否终止」对齐。
+- Critic bootstrap：`(1 - done) * γ^H * Q_target(s', a')`；`done=1` 时不 bootstrap。
+
+### 2.2 Transition 构造（`awac_transition_dataset.py`）
+
+**不可改索引关系**（`AWACTransitionDataset.__getitem__`）：
+
+| 符号 | 时刻 / 内容 |
+|------|-------------|
+| `s` | 帧 `t`：图像、语言、state |
+| `a` | `[t, t+H)` 动作块 |
+| `r` | `reward.iloc[t]`（已是 \(R_{chunk}(t)\)） |
+| `s'` | 帧 `t+H` |
+| `a'` | `[t+H, t+2H)` 行为动作（**离线数据**，不是 policy rollout） |
+| `done` | `done.iloc[t]` |
+
+**不可改过滤条件**：
+
+```text
+base_index + 2 * H <= traj_len
+```
+
+保证 `s'` 与 `a'` 在轨迹内真实存在。日志里 `[AWAC] ... valid transitions` 比例骤降时，先查 `H` 是否与数据长度、预处理一致。
+
+**相机顺序**（与 Critic 一致）：`modality_keys["video"]` 第 0 路 = 头部静态相机，第 1 路 = 腕部相机 → Critic `HEAD_CAMERA_INDEX=0`、`WRIST_CAMERA_INDEX=1`。
+
+### 2.3 Critic 网络结构（`awac_q_critic.py`）
+
+**不可改 token 拼接顺序**（`_build_tokens`）：
+
+```text
+[vision(2) | text(1) | action(H) | state(1) | query(E)]
+```
+
+- **Vision**：从 BC 的 `qwen_vl_interface.model.visual` **deepcopy** 两路编码，**不是**整段 VLM forward 再 pool。
+- **Text**：`tokenize → embed_tokens → mean pool → (B,1,D)`，**不走** visual 塔。
+- **Q 读出位置**：Transformer 输出序列**最后 E 个 token**（query 槽位）经 `q_head` → 每头一个 Q。
+- **Twin Q**：`num_q_heads=E`；TD 与 Actor 优势一律用 **`min` over E**（`min_q` / `q_next.min`），不要改成 mean/max，除非整套算法重写。
+
+**不可改 TD 目标**（`td_loss`）：
+
+```text
+y = r + (1 - done) * (γ^H) * min_E Q_target(s', a')
+loss = MSE(Q_pred, y)   # 每个 head 同一 scalar target
+```
+
+- `a'` **必须**是 batch 的 `next_action`（行为策略），**不能**改成 `actor.predict_action(s')`。
+- **没有 V 网络**；不要恢复 expectile / `value_net` / `V(s)` 优势。
+- Target 网络：每步 **Polyak** `polyak_tau` 软更新（`soft_update_target`），不是周期性硬拷贝。
+
+**Critic 阶段冻结契约**（`train_awac_critic.py`）：
+
+- BC **actor 全程 `requires_grad=False`**，只用于加载 VLM、复制 visual 权重。
+- Optimizer **只含 critic** 可训练参数；actor 不得进 optimizer。
+
+### 2.4 Actor 阶段（`train_awac_actor.py` + `QwenPI_awac.py`）
+
+**不可改对象分工**：
+
+| 模块 | 是否训练 | 用途 |
+|------|----------|------|
+| `actor`（`QwenPI_AWAC`） | 是（受 `freeze_modules` 约束） | 加权 flow-matching；**保存的 checkpoint** |
+| `actor_pi` | **否**（BC 加载后 `deepcopy` 一次，永不更新） | 仅 `predict_action` → \(a_\pi\) |
+| `critic` | **否** | 仅 `min Q(s,·)` 算优势 |
+
+**不可改优势与权重**（`compute_awac_weights`）：
+
+```text
+A = min_E Q(s, a_pi) - min_E Q(s, a_data)
+w = clip(exp(A / λ), w_max)
+```
+
+- `a_pi`：**只能**来自 **`actor_pi`**，不能来自正在训练的 `actor`。
+- `a_data`：batch 离线 `action`（行为 chunk）。
+- **禁止**用 \(Q - V(s)\) 或单独 V 网络。
+
+**不可改 Actor loss**（`QwenPI_awac.forward`）：
+
+- 对 **数据里的 `a_data`** 做 flow-matching，得到 **逐样本** `loss_per_sample`。
+- 再 `(loss_per_sample * w).mean()`；**不是**对 `a_pi` 做 BC loss。
+
+**不可改入口名**：
+
+- Actor 训练 **`framework.name` 必须是 `QwenPI_AWAC`**（shell / CLI 覆盖）；Critic 阶段用 `QwenPI`。
+
+**Optimizer 契约**：
+
+- `build_param_lr_groups` 只含 **可训练 actor** 参数；**不得**包含 `critic` 或 `actor_pi`（代码里会 `RuntimeError`）。
+
+### 2.5 Checkpoint 与数据注册
+
+| 阶段 | 文件名 | 内容 |
+|------|--------|------|
+| Critic | `steps_*_critic.pt` | `critic`、`critic_target`、`steps`、`awac`（**无** `value_net`） |
+| Actor | `steps_*_pytorch_model.pt` | 与 BC 相同，仅 **可训练 actor** 权重 |
+
+- 旧 ckpt 若含 `value_net` 键，Actor 加载会 **warning 并忽略**；应用新 Critic 重训。
+- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`，H200 下 `d_name=calvin_task_ABC_D`。
+
+### 2.6 可以安全改的配置（不破坏契约时）
+
+- `run_root_dir`、`run_id`、`bc_checkpoint`、`critic_checkpoint` 路径
+- `critic_max_train_steps` / `actor_max_train_steps`、`save_interval`、batch size、学习率、`freeze_modules`
+- `awac_lambda`、`awac_weight_max`（只影响 Actor 权重形状）
+- 预处理里的 `step_penalty` / `failure_reward` 等 — **改后必须重跑 `prepare_awac_rewards.py`**
+
+### 2.7 常见 Debug 对照表
+
+| 现象 | 优先检查 |
+|------|----------|
+| `reward` 全 0 / warning | 未跑 `prepare_awac_rewards.py` 或列名不对 |
+| `critic_loss` NaN / `target_mean` 爆炸 | `reward_is_chunk_return` 与 parquet 语义不一致；或 `γ`/`H` 与预处理不一致 |
+| `valid transitions` 极少 | `H` 过大；或轨迹太短 |
+| Actor 报 optimizer 含 frozen 参数 | critic / actor_pi 误入 optimizer（不应改训练脚本绕过，应查注册逻辑） |
+| 优势恒为 0、`awac_weight_mean≈1` | critic 未加载或 Q 未区分 \(a_\pi\) / \(a_{data}\)；或 `actor_pi` 被误训练 |
+| 加载 critic 报 shape 错 | Critic 与 BC 的 `action_dim`/`state_dim`/`H`/`hidden_dim` 与训练时不一致 |
+| 数据找不到 | `data_root_dir` + `data_mix` 子目录名不匹配（应用 `calvin_abc_d_h200` → `calvin_task_ABC_D`） |
+
+### 2.8 逻辑所在文件（改代码前先定位）
+
+| 契约 | 文件 | 函数 / 类 |
+|------|------|-----------|
+| 逐步奖励 + chunk return + done | `starVLA/dataloader/awac_reward_preprocessing.py` | `compute_step_rewards`、`compute_discounted_chunk_return`、`compute_done_flags` |
+| transition 索引 | `starVLA/dataloader/awac_transition_dataset.py` | `AWACTransitionDataset` |
+| Q 结构 + TD | `starVLA/model/modules/critic/awac_q_critic.py` | `AWACQCritic._build_tokens`、`td_loss` |
+| Critic 训练循环 | `starVLA/training/train_awac_critic.py` | `AWACCriticTrainer` |
+| 优势 + actor_pi | `starVLA/training/train_awac_actor.py` | `build_frozen_actor_pi_snapshot`、`compute_awac_weights` |
+| 加权 flow loss | `starVLA/model/framework/VLM4A/QwenPI_awac.py` | `Qwen_PI_AWAC.forward` |
+| 数据 mix 注册 | `examples/calvin/train_files/data_registry/data_config.py` | `DATASET_NAMED_MIXTURES` |
+
+---
+
+## 3. 数据处理
+
+### 3.1 原始数据要求
 
 - **格式**：LeRobot（与 BC 相同），`meta/modality.json` 已配置。  
 - **原始 parquet**：通常只有轨迹末帧的 **`success`**（成功/失败）；可无 `reward` / `done`。  
 - **训练前**必须运行预处理脚本，写入 `step_reward`、`reward`、`done`。
 
-### 2.2 预处理在做什么
+### 3.2 预处理在做什么
 
 | 步骤 | 函数 | 说明 |
 |------|------|------|
@@ -68,7 +222,7 @@ w = \mathrm{clip}\Big(\exp\big(\frac{A}{\lambda}\big),\; w_{\max}\Big)
 
 实现代码：`starVLA/dataloader/awac_reward_preprocessing.py`。
 
-### 2.3 训练时 Dataloader 做什么
+### 3.3 训练时 Dataloader 做什么
 
 `AWACTransitionDataset` **不再**重复算 reward/done，只：
 
@@ -79,7 +233,7 @@ w = \mathrm{clip}\Big(\exp\big(\frac{A}{\lambda}\big),\; w_{\max}\Big)
   - `done`：读 `done.iloc[t]`（无列时才用启发式）  
 - 过滤：仅保留 `t + 2H ≤ traj_len` 的步（保证 `s'`、`a'` 真实存在）。
 
-### 2.4 预处理脚本示例
+### 3.4 预处理脚本示例
 
 ```bash
 # 在仓库根目录执行
@@ -99,7 +253,7 @@ python examples/calvin/scripts/prepare_awac_rewards.py \
   --dry_run
 ```
 
-### 2.5 预处理参数怎么改
+### 3.5 预处理参数怎么改
 
 | 参数 | 默认 | 何时修改 |
 |------|------|----------|
@@ -116,9 +270,9 @@ python examples/calvin/scripts/prepare_awac_rewards.py \
 
 ---
 
-## 3. Critic 训练
+## 4. Critic 训练
 
-### 3.1 脚本示例
+### 4.1 脚本示例
 
 ```bash
 # 仓库根目录
@@ -139,7 +293,7 @@ accelerate launch \
   --run_id awac_calvin_critic
 ```
 
-### 3.2 输出与监控
+### 4.2 输出与监控
 
 | 输出 | 路径 |
 |------|------|
@@ -153,7 +307,7 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 
 标量：`critic_loss`、`q_mean`、`target_mean`、`learning_rate`。
 
-### 3.3 Shell 里常改的参数（`run_calvin_awac_critic.sh`）
+### 4.3 Shell 里常改的参数（`run_calvin_awac_critic.sh`）
 
 | 变量 | 含义 |
 |------|------|
@@ -165,7 +319,7 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 | `run_root_dir` / `run_id` | 日志与 checkpoint 目录 |
 | `--num_processes` | GPU 数量 |
 
-### 3.4 YAML / CLI 里常改的参数（`starvla_awac_calvin.yaml`）
+### 4.4 YAML / CLI 里常改的参数（`starvla_awac_calvin.yaml`）
 
 **数据 `datasets.awac_data`**
 
@@ -221,9 +375,9 @@ CLI 覆盖示例：
 
 ---
 
-## 4. Actor 训练
+## 5. Actor 训练
 
-### 4.1 脚本示例
+### 5.1 脚本示例
 
 ```bash
 bash examples/calvin/train_files/run_calvin_awac_actor.sh
@@ -244,7 +398,7 @@ accelerate launch \
   --run_id awac_calvin_actor
 ```
 
-### 4.2 输出
+### 5.2 输出
 
 | 输出 | 路径 |
 |------|------|
@@ -252,7 +406,7 @@ accelerate launch \
 
 格式与 BC 相同，可直接用于 Calvin 评测脚本。
 
-### 4.3 Shell 里常改的参数（`run_calvin_awac_actor.sh`）
+### 5.3 Shell 里常改的参数（`run_calvin_awac_actor.sh`）
 
 | 变量 | 含义 |
 |------|------|
@@ -264,7 +418,7 @@ accelerate launch \
 
 其余 `calvin_data_root`、`data_mix`、`base_vlm` 与 Critic 阶段一致。
 
-### 4.4 YAML / CLI 里常改的参数
+### 5.4 YAML / CLI 里常改的参数
 
 **Actor 专用 `trainer`**
 
@@ -300,7 +454,7 @@ CLI 示例：
 
 ---
 
-## 5. 推荐执行顺序
+## 6. 推荐执行顺序
 
 ```text
 BC 训练 (train_starvla.py)
@@ -314,7 +468,7 @@ train_awac_actor.py       # 得 *_pytorch_model.pt
 Calvin eval
 ```
 
-## 6. 相关文件索引
+## 7. 相关文件索引
 
 | 文件 | 作用 |
 |------|------|
