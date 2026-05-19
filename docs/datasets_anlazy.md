@@ -387,6 +387,20 @@ examples/calvin/scripts/inspect_dataset_layout.py
 
 ```bash
 cd /inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
+bash examples/calvin/scripts/run_h200_dataset_scan.sh
+```
+
+输出默认在：
+
+```text
+logs/dataset_scan_YYYYMMDD_HHMMSS/dataset_layout.md
+logs/dataset_scan_YYYYMMDD_HHMMSS/dataset_layout.json
+```
+
+如果需要手动改参数，再执行完整形式：
+
+```bash
+cd /inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
 export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project
 export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
 export STAR_VLA_PYTHON="${CONDA_ROOT}/envs/starVLA_qwen35/bin/python"

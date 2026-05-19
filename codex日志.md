@@ -1119,3 +1119,14 @@
 
 结果如何：
 已修改 `examples/calvin/scripts/inspect_dataset_layout.py` 和 `docs/datasets_anlazy.md`，并记录本日志。验证通过：`python -m py_compile examples/calvin/scripts/inspect_dataset_layout.py`、本地小规模 `--progress --max-depth 2` 扫描、`git diff --check -- examples/calvin/scripts/inspect_dataset_layout.py docs/datasets_anlazy.md codex日志.md`。本轮仍未在 H200 上实际扫描 `/public/three/dataset`。
+
+## 2026-05-19 21:51
+
+问题是什么：
+用户再次在 H200 上运行数据集扫描命令，脚本已经开始输出进度并识别 `/public/three/dataset` 下的 top-level child 与 6 个 LeRobot root，但命令仍在 `--max-count-files 200000 \` 后被 `sed` 粘进 Python 参数，导致后半段写出 md/json 和查看结果的逻辑没有按预期执行。
+
+解决思路：
+新增一键 wrapper `examples/calvin/scripts/run_h200_dataset_scan.sh`，把项目路径、Python 路径、三个默认扫描根目录、深度限制、文件数限制、json/md 输出和 `sed -n` 查看都封装起来。这样 H200 上只需要运行 `bash examples/calvin/scripts/run_h200_dataset_scan.sh`，不再依赖易错的多行反斜杠粘贴。同步更新 `docs/datasets_anlazy.md`，优先给出一键脚本命令，再保留手动可调参数版本。
+
+结果如何：
+已新增 `examples/calvin/scripts/run_h200_dataset_scan.sh`，更新 `docs/datasets_anlazy.md` 和本日志。验证通过：`bash -n examples/calvin/scripts/run_h200_dataset_scan.sh`、`python -m py_compile examples/calvin/scripts/inspect_dataset_layout.py`、`git diff --check -- examples/calvin/scripts/run_h200_dataset_scan.sh docs/datasets_anlazy.md codex日志.md`。本轮未在 H200 上实际执行一键扫描。
