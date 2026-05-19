@@ -16,9 +16,13 @@ Raw Calvin LeRobot data usually only has **episode-end `success`**. Run:
 ```bash
 python examples/calvin/scripts/prepare_awac_rewards.py \
   --dataset_root /path/to/calvin_task_ABC_D \
+  --output_dataset_root /path/to/calvin_task_ABC_D_awac_work \
   --action_horizon 8 \
   --gamma 0.996
 ```
+
+Use `--output_dataset_root` for public or competition datasets. In-place writes
+are intentionally refused unless `--allow_in_place` is passed explicitly.
 
 This writes into each episode parquet:
 

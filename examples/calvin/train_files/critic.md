@@ -239,9 +239,12 @@ w = clip(exp(A / λ), w_max)
 # 在仓库根目录执行
 python examples/calvin/scripts/prepare_awac_rewards.py \
   --dataset_root /path/to/calvin_task_ABC_D \
+  --output_dataset_root /path/to/calvin_task_ABC_D_awac_work \
   --action_horizon 8 \
   --gamma 0.996
 ```
+
+若确认输入目录已经是个人工作副本、允许被写入，可不传 `--output_dataset_root`，但必须显式加 `--allow_in_place`。不要对官方/比赛数据目录原地写 `success/reward/done`。
 
 **仅扫描、不写盘**：
 
@@ -258,6 +261,8 @@ python examples/calvin/scripts/prepare_awac_rewards.py \
 | 参数 | 默认 | 何时修改 |
 |------|------|----------|
 | `--dataset_root` | （必填） | LeRobot 数据集根目录（含 `data/**/*.parquet`） |
+| `--output_dataset_root` | 空 | 推荐填写个人 AWAC 工作副本目录，避免修改源数据 |
+| `--allow_in_place` | 关 | 仅当 `--dataset_root` 已是个人工作副本时开启 |
 | `--action_horizon` | 8 | 与 yaml 中 `framework.action_model.action_horizon` **一致** |
 | `--gamma` | 0.996 | 与 yaml 中 `awac.gamma` **一致** |
 | `--step_penalty` | -1 | 调稀疏/稠密奖励尺度 |

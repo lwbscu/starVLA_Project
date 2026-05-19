@@ -27,9 +27,12 @@ output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
 
-# Run once before first AWAC training if parquet has no reward/done columns:
+# Run once before first AWAC training if parquet has no reward/done columns.
+# Prefer writing to a personal AWAC working copy; only use --allow_in_place on
+# non-public copied datasets:
 # python examples/calvin/scripts/prepare_awac_rewards.py \
 #   --dataset_root "${calvin_data_root}/${calvin_dataset_name}" \
+#   --output_dataset_root "/path/to/awac_work/${calvin_dataset_name}" \
 #   --action_horizon 8 --gamma 0.996
 
 accelerate launch \

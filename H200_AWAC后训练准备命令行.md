@@ -2,6 +2,8 @@
 
 本文档用于把已训练好的 PI-State baseline 接到 `examples/calvin/train_files/critic.md` 的 AWAC 后训练流程。核心原则：不伪造成功，不绕过 `H=8 / gamma=0.996 / reward=chunk return / done=最后 H 帧` 的契约。
 
+**数据安全原则**：不修改 `/inspire/.../public` 下的官方/比赛数据。`success`、`step_reward`、`reward`、`done` 只写入个人目录下的 AWAC 工作副本。
+
 当前接受的 BC baseline：
 
 | 模型 | checkpoint 口径 |
@@ -36,11 +38,15 @@ export PROJECT_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_P
 export CONDA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/miniconda3
 export STAR_VLA_PYTHON="${CONDA_ROOT}/envs/starVLA_qwen35/bin/python"
 export CALVIN_PYTHON="${CONDA_ROOT}/envs/calvin/bin/python"
+export ROLLOUT_PARQUET_PYTHON="${STAR_VLA_PYTHON}"
 
 export H200_CALVIN_DATA_ROOT=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
 export H200_CALVIN_DATA_NAME=calvin_task_ABC_D
 export H200_CALVIN_DATA_MIX=calvin_abc_d_h200
-export AWAC_DATASET_ROOT="${H200_CALVIN_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
+export AWAC_SOURCE_DATA_ROOT="${H200_CALVIN_DATA_ROOT}"
+export AWAC_SOURCE_DATASET_ROOT="${AWAC_SOURCE_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
+export AWAC_WORK_DATA_ROOT="${PROJECT_ROOT}/awac_datasets/calvin_abc_d_awac_h8_g0996"
+export AWAC_WORK_DATASET_ROOT="${AWAC_WORK_DATA_ROOT}/${H200_CALVIN_DATA_NAME}"
 
 export PI_STATE_BATCH_ROOT="${PROJECT_ROOT}/logs/20260519_h200_server1_pi_state_30k_v1"
 export PI_STATE_CKPT_0P8B="${PI_STATE_BATCH_ROOT}/server1_pi_state/qwen35_0p8b/pi_state_qwen35_0p8b_30000step/checkpoints/pi_state_qwen35_0p8b_30000step/checkpoints/steps_30000_pytorch_model.pt"
@@ -62,7 +68,7 @@ mkdir -p "$OUT"
 
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/inspect_awac_readiness.py \
   --batch-root "${PI_STATE_BATCH_ROOT}" \
-  --data-root "${H200_CALVIN_DATA_ROOT}" \
+  --data-root "${AWAC_SOURCE_DATA_ROOT}" \
   --dataset-name "${H200_CALVIN_DATA_NAME}" \
   --data-mix "${H200_CALVIN_DATA_MIX}" \
   --expected-step 30000 \
@@ -74,7 +80,7 @@ echo "inspect_status=$?"
 sed -n '1,260p' "$OUT/awac_readiness.md"
 ```
 
-此时如果只剩 `success labels` 和 `AWAC reward preprocessing` 失败，进入下一节。
+此时如果只剩 `success labels` 和 `AWAC reward preprocessing` 失败，进入下一节。这里检查的是官方源数据，只读，不写。
 
 ## 3. 补齐 success 标签
 
@@ -83,6 +89,8 @@ sed -n '1,260p' "$OUT/awac_readiness.md"
 1. 如果有带 `success` 的源数据集，使用 `--source-dataset-root` 按 episode 相对路径复制。
 2. 如果确认 `calvin_task_ABC_D` 是成功 expert demonstration 数据，显式使用 `--all-success-demo`，脚本会写成“仅末帧 success=True，其余帧 False”。
 
+当前已确认训练 demo 都是成功轨迹，因此可以使用 `--all-success-demo`，但仍然只写到 `${AWAC_WORK_DATASET_ROOT}` 工作副本。
+
 先 dry-run：
 
 ```bash
@@ -90,7 +98,8 @@ export SUCCESS_OUT="logs/awac_success_stamp_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$SUCCESS_OUT"
 
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/stamp_awac_success_labels.py \
-  --dataset-root "${AWAC_DATASET_ROOT}" \
+  --dataset-root "${AWAC_SOURCE_DATASET_ROOT}" \
+  --output-dataset-root "${AWAC_WORK_DATASET_ROOT}" \
   --all-success-demo \
   --manifest-jsonl "$SUCCESS_OUT/success_stamp_manifest.jsonl" \
   > "$SUCCESS_OUT/success_stamp_dry_run.log"
@@ -102,7 +111,8 @@ cat "$SUCCESS_OUT/success_stamp_dry_run.log"
 
 ```bash
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/stamp_awac_success_labels.py \
-  --dataset-root "${AWAC_DATASET_ROOT}" \
+  --dataset-root "${AWAC_SOURCE_DATASET_ROOT}" \
+  --output-dataset-root "${AWAC_WORK_DATASET_ROOT}" \
   --all-success-demo \
   --manifest-jsonl "$SUCCESS_OUT/success_stamp_manifest_write.jsonl" \
   --write \
@@ -111,7 +121,7 @@ cat "$SUCCESS_OUT/success_stamp_dry_run.log"
 cat "$SUCCESS_OUT/success_stamp_write.log"
 ```
 
-如果不能确认全是成功 demo，不要执行 `--all-success-demo --write`；必须先拿到源成功标签。
+如果不能确认全是成功 demo，不要执行 `--all-success-demo --write`；必须先拿到源成功标签。执行后，官方源数据 `${AWAC_SOURCE_DATASET_ROOT}` 不变，后续只使用 `${AWAC_WORK_DATASET_ROOT}`。
 
 ## 4. 写入 AWAC reward/done
 
@@ -119,7 +129,7 @@ cat "$SUCCESS_OUT/success_stamp_write.log"
 
 ```bash
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/prepare_awac_rewards.py \
-  --dataset_root "${AWAC_DATASET_ROOT}" \
+  --dataset_root "${AWAC_WORK_DATASET_ROOT}" \
   --action_horizon 8 \
   --gamma 0.996 \
   --dry_run
@@ -129,10 +139,13 @@ dry-run 通过后正式写入：
 
 ```bash
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/prepare_awac_rewards.py \
-  --dataset_root "${AWAC_DATASET_ROOT}" \
+  --dataset_root "${AWAC_WORK_DATASET_ROOT}" \
   --action_horizon 8 \
-  --gamma 0.996
+  --gamma 0.996 \
+  --allow_in_place
 ```
+
+这里的 in-place 只发生在个人 AWAC 工作副本 `${AWAC_WORK_DATASET_ROOT}`，不会改 public 官方数据。
 
 ## 5. 跑 PI-State rollout 诊断
 
@@ -153,6 +166,7 @@ export REQUIRE_MP4=1
 export SEND_STATE_TO_POLICY=1
 export WRITE_ROLLOUT_LEROBOT=1
 export WRITE_ROLLOUT_VIDEOS=1
+export ROLLOUT_PARQUET_PYTHON="${STAR_VLA_PYTHON}"
 export UNNORM_KEY=franka
 
 export H200_CALVIN_EVAL_DATASET_PATH="${PROJECT_ROOT}/calvin/dataset/calvin_debug_dataset"
@@ -171,7 +185,7 @@ mkdir -p "$OUT"
 
 "${STAR_VLA_PYTHON}" examples/calvin/scripts/inspect_awac_readiness.py \
   --batch-root "${PI_STATE_BATCH_ROOT}" \
-  --data-root "${H200_CALVIN_DATA_ROOT}" \
+  --data-root "${AWAC_WORK_DATA_ROOT}" \
   --dataset-name "${H200_CALVIN_DATA_NAME}" \
   --data-mix "${H200_CALVIN_DATA_MIX}" \
   --expected-step 30000 \
@@ -198,7 +212,7 @@ export CUDA_VISIBLE_DEVICES=0
 export num_processes=1
 export base_vlm="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-0.8B"
 export bc_checkpoint="${PI_STATE_CKPT_0P8B}"
-export calvin_data_root="${H200_CALVIN_DATA_ROOT}"
+export calvin_data_root="${AWAC_WORK_DATA_ROOT}"
 export data_mix="${H200_CALVIN_DATA_MIX}"
 export include_state=true
 export state_dim=8
@@ -215,7 +229,7 @@ export CUDA_VISIBLE_DEVICES=3,4,5,6,7
 export num_processes=5
 export base_vlm="${PROJECT_ROOT}/playground/Pretrained_models/Qwen3.5-9B"
 export bc_checkpoint="${PI_STATE_CKPT_9B}"
-export calvin_data_root="${H200_CALVIN_DATA_ROOT}"
+export calvin_data_root="${AWAC_WORK_DATA_ROOT}"
 export data_mix="${H200_CALVIN_DATA_MIX}"
 export include_state=true
 export state_dim=8
@@ -224,4 +238,3 @@ export run_id="awac_critic_pi_state_qwen35_9b_bc25k"
 
 bash examples/calvin/train_files/run_calvin_awac_critic.sh
 ```
-

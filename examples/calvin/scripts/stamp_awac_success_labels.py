@@ -8,13 +8,16 @@ success when a dataset lacks labels. Use exactly one explicit source:
   1. ``--source-dataset-root``: copy terminal success from a matching dataset.
   2. ``--all-success-demo``: assert every episode is a successful expert demo.
 
-By default the script is a dry run. Pass ``--write`` to modify parquet files.
+By default the script is a dry run. Pass ``--write`` plus
+``--output-dataset-root`` to create a modified AWAC working copy. In-place writes
+are refused unless ``--allow-in-place`` is set explicitly.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,6 +44,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-length-mismatch", action="store_true", help="Allow source/target episode length mismatch.")
     parser.add_argument("--limit", type=int, default=0, help="Optional maximum number of episodes to process.")
     parser.add_argument("--manifest-jsonl", default=None, help="Optional path for per-episode JSONL audit manifest.")
+    parser.add_argument(
+        "--output-dataset-root",
+        default=None,
+        help=(
+            "Write modified parquets into this LeRobot dataset root. Sidecar files are copied from --dataset-root. "
+            "Use this for AWAC working copies so official/public datasets are not mutated."
+        ),
+    )
+    parser.add_argument(
+        "--allow-in-place",
+        action="store_true",
+        help="Allow --write to modify --dataset-root in place. Avoid this for public/competition datasets.",
+    )
     parser.add_argument("--write", action="store_true", help="Actually write parquet files. Without this, dry-run only.")
     return parser.parse_args()
 
@@ -84,9 +100,37 @@ def write_manifest_row(manifest_path: Path | None, row: dict[str, Any]) -> None:
 
 
 def atomic_write_parquet(df: Any, parquet_path: Path) -> None:
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = parquet_path.with_name(f".{parquet_path.name}.tmp")
     df.to_parquet(tmp_path, index=False)
     tmp_path.replace(parquet_path)
+
+
+def same_path(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def output_path_for_parquet(input_root: Path, output_root: Path, parquet_path: Path) -> Path:
+    try:
+        rel_to_data = parquet_path.relative_to(input_root / "data")
+        return output_root / "data" / rel_to_data
+    except ValueError:
+        return output_root / parquet_path.relative_to(input_root)
+
+
+def copy_sidecar_files(input_root: Path, output_root: Path) -> int:
+    copied = 0
+    for source_path in input_root.rglob("*"):
+        if source_path.is_dir():
+            continue
+        if source_path.suffix == ".parquet":
+            continue
+        rel_path = source_path.relative_to(input_root)
+        dest_path = output_root / rel_path
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        copied += 1
+    return copied
 
 
 def main() -> int:
@@ -102,12 +146,26 @@ def main() -> int:
         return 2
 
     target_root = Path(args.dataset_root)
+    output_root = Path(args.output_dataset_root) if args.output_dataset_root else target_root
+    output_is_input = same_path(target_root, output_root)
+    if args.write and output_is_input and not args.allow_in_place:
+        print(
+            "--write would modify --dataset-root in place. Refusing to protect public/competition datasets. "
+            "Pass --output-dataset-root for an AWAC working copy, or explicitly pass --allow-in-place.",
+            file=sys.stderr,
+        )
+        return 2
+
     target_paths = find_parquets(target_root)
     if args.limit and args.limit > 0:
         target_paths = target_paths[: args.limit]
     if not target_paths:
         print(f"No target parquet files found under {target_root}", file=sys.stderr)
         return 2
+
+    copied_sidecars = 0
+    if args.write and not output_is_input:
+        copied_sidecars = copy_sidecar_files(target_root, output_root)
 
     src_by_rel: dict[Path, Path] = {}
     source_root: Path | None = None
@@ -130,6 +188,7 @@ def main() -> int:
         "success_true": 0,
         "success_false": 0,
         "failures": 0,
+        "sidecars_copied": copied_sidecars,
     }
 
     for target_path in target_paths:
@@ -137,9 +196,11 @@ def main() -> int:
         rel_path = relative_data_path(target_root, target_path)
         row: dict[str, Any] = {
             "target": str(target_path),
+            "output": str(output_path_for_parquet(target_root, output_root, target_path)),
             "relative_path": str(rel_path),
             "mode": "all_success_demo" if args.all_success_demo else "source_dataset",
             "write": bool(args.write),
+            "in_place": bool(output_is_input),
         }
         try:
             target_df = pd.read_parquet(target_path)
@@ -172,8 +233,13 @@ def main() -> int:
             if args.success_column in target_df.columns:
                 current_terminal = to_bool(target_df[args.success_column].iloc[-1])
                 if current_terminal == terminal_success and not args.overwrite:
-                    stats["already_ok"] += 1
-                    row["status"] = "already_ok"
+                    if args.write and not output_is_input:
+                        atomic_write_parquet(target_df, output_path_for_parquet(target_root, output_root, target_path))
+                        stats["written"] += 1
+                        row["status"] = "copied_already_ok"
+                    else:
+                        stats["already_ok"] += 1
+                        row["status"] = "already_ok"
                     write_manifest_row(manifest_path, row)
                     continue
                 if not args.overwrite:
@@ -187,7 +253,7 @@ def main() -> int:
             target_df[args.success_column] = success_values
             stats["would_write"] += 1
             if args.write:
-                atomic_write_parquet(target_df, target_path)
+                atomic_write_parquet(target_df, output_path_for_parquet(target_root, output_root, target_path))
                 stats["written"] += 1
                 row["status"] = "written"
             else:
@@ -203,7 +269,8 @@ def main() -> int:
         f"[stamp_awac_success_labels] {mode}: "
         f"episodes={stats['episodes']} would_write={stats['would_write']} written={stats['written']} "
         f"already_ok={stats['already_ok']} success_true={stats['success_true']} "
-        f"success_false={stats['success_false']} failures={stats['failures']}"
+        f"success_false={stats['success_false']} failures={stats['failures']} "
+        f"sidecars_copied={stats['sidecars_copied']} output_root={output_root}"
     )
     if manifest_path:
         print(f"[stamp_awac_success_labels] manifest={manifest_path}")

@@ -17,6 +17,9 @@ from __future__ import annotations
 import json
 import math
 import numbers
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -225,6 +228,52 @@ def _encode_png_image(frame: np.ndarray) -> dict[str, Any]:
 def _append_jsonl(path: Path, obj: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(_as_jsonable(obj), ensure_ascii=False) + "\n")
+
+
+def _same_executable(left: str, right: str) -> bool:
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return left == right
+
+
+def _write_parquet_with_fallback(df: Any, parquet_path: Path) -> None:
+    try:
+        df.to_parquet(parquet_path, index=False)
+        return
+    except ImportError as first_exc:
+        parquet_python = os.environ.get("ROLLOUT_PARQUET_PYTHON") or os.environ.get("STAR_VLA_PYTHON")
+        if not parquet_python:
+            raise ImportError(
+                "Writing rollout parquet requires pyarrow or fastparquet in the eval environment. "
+                "Install one parquet engine for CALVIN_PYTHON, or set ROLLOUT_PARQUET_PYTHON / "
+                "STAR_VLA_PYTHON to a Python environment with pandas parquet support."
+            ) from first_exc
+        if _same_executable(parquet_python, sys.executable):
+            raise ImportError(
+                f"Parquet fallback executable is the same Python without parquet support: {parquet_python}"
+            ) from first_exc
+
+        tmp_pickle = parquet_path.with_name(f".{parquet_path.name}.pickle")
+        df.to_pickle(tmp_pickle)
+        script = (
+            "import sys\n"
+            "import pandas as pd\n"
+            "df = pd.read_pickle(sys.argv[1])\n"
+            "df.to_parquet(sys.argv[2], index=False)\n"
+        )
+        try:
+            subprocess.run([parquet_python, "-c", script, str(tmp_pickle), str(parquet_path)], check=True)
+        except (OSError, subprocess.CalledProcessError) as fallback_exc:
+            raise RuntimeError(
+                "CALVIN eval Python could not write rollout parquet, and the delegated parquet writer failed. "
+                f"delegated_python={parquet_python} parquet_path={parquet_path}"
+            ) from fallback_exc
+        finally:
+            try:
+                tmp_pickle.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @dataclass
@@ -537,7 +586,7 @@ class RolloutLeRobotWriter:
         chunk_dir = self.data_dir / f"chunk-{episode_chunk:03d}"
         chunk_dir.mkdir(parents=True, exist_ok=True)
         parquet_path = chunk_dir / f"episode_{episode.episode_index:06d}.parquet"
-        pd.DataFrame(episode.rows).to_parquet(parquet_path, index=False)
+        _write_parquet_with_fallback(pd.DataFrame(episode.rows), parquet_path)
 
         if self.write_videos:
             self._write_episode_video(episode, "image", episode.image_frames)
