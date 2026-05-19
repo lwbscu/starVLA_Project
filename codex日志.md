@@ -952,3 +952,25 @@
 
 结果如何：
 修改 `H200_批量测试命令行.md` 和 `codex日志.md`，准备提交并推送。验证项：`git diff --check -- H200_批量测试命令行.md` 已通过；后续提交只包含测试命令文档和本日志，不引入无关改动。
+
+## 2026-05-19 20:11
+
+问题是什么：
+用户运行四路线批量 eval 命令后，输出目录 `logs/calvin_eval_latest_20260519_h200_qwen_mix_30k_v1` 里只看到 `server4_pi/qwen35_9b` 一个模型，并误以为没有 mp4 和评估指标。
+
+解决思路：
+根据用户贴出的 shell 历史判断，当前 shell 里仍残留了此前单模型测试用的 `EXPECTED_JOBS=$'server4_pi/qwen35_9b'`，所以统一 eval 脚本只评测了这一个模型，这是预期行为。日志末尾已经显示 `results=.../eval/mp4/results.json mp4_count=1`，说明 `results.json` 和 mp4 已生成；它们不在顶层目录，而是在 `server4_pi/qwen35_9b/steps_30000/eval/mp4/` 子目录。更新 `H200_批量测试命令行.md`，在全量评测命令前加入 `unset EXPECTED_JOBS`，并补充结果文件和 mp4 的实际查找路径。
+
+结果如何：
+修改 `H200_批量测试命令行.md` 和 `codex日志.md`。给用户的判断是：当前 eval 链路成功，只有一个模型是因为 `EXPECTED_JOBS` 限制没有取消；评估指标在 `summary.tsv` 和每个模型的 `eval/mp4/results.json`，mp4 在同级 `eval/mp4/*.mp4`。验证待执行：`git diff --check -- H200_批量测试命令行.md codex日志.md`。
+
+## 2026-05-19 20:02
+
+问题是什么：
+用户确认共享盘 `task_D_D` 当前没有 `.hydra/merged_config.yaml`，要求给出命令继续检索该文件夹或其他位置是否还有可用于 CALVIN 测试的数据集。
+
+解决思路：
+区分两类目录：CALVIN eval 环境目录必须含有 `validation/.hydra/merged_config.yaml`、`training/.hydra/merged_config.yaml` 或直接 `.hydra/merged_config.yaml`；LeRobot 训练/后训练数据目录通常含 `meta/info.json`、`meta/modality.json`、`data/`、`videos/`，不能直接当作 CALVIN env eval 目录。给用户提供可在 H200 上运行的 `find` 和 Python 分类脚本：扫描共享盘、公盘、个人项目下所有 `.hydra/merged_config.yaml`，自动推断可传给 `H200_CALVIN_EVAL_DATASET_PATH` 的根目录，同时扫描 LeRobot 数据集候选，避免再把训练数据误当 eval 环境。
+
+结果如何：
+本轮未修改代码。输出给用户一套只读检索命令和分类逻辑，要求以实际扫描结果为准，不通过关闭 eval dataset 检查绕过问题。本轮不提交、不推送。
