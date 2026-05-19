@@ -36,7 +36,7 @@ The AWAC dataloader reads `reward` at index `t` as **precomputed** \(R_{chunk}(t
 
 ## Training (two phases)
 
-### Phase 1 — Critic (Q + expectile V)
+### Phase 1 — Critic (Q only, TD loss)
 
 ```bash
 bash examples/calvin/train_files/run_calvin_awac_critic.sh
@@ -55,7 +55,7 @@ TensorBoard (critic phase, rank 0):
 tensorboard --logdir logs/<run_id>/tensorboard --port 6006
 ```
 
-Scalars: `critic_loss`, `value_loss`, `total_loss`, `q_mean`, `target_mean`, `v_mean`, `learning_rate`.
+Scalars: `critic_loss`, `q_mean`, `target_mean`, `learning_rate`.
 
 ### Phase 2 — Actor (weighted flow matching)
 
@@ -78,11 +78,13 @@ Output: `logs/<run_id>/checkpoints/steps_*_pytorch_model.pt` (compatible with Ca
 | `awac.num_q_heads` | 2 | Twin Q heads (`E`) |
 | `awac.hidden_dim` | 512 | Critic token dim `D` |
 | `awac.awac_lambda` | 0.5 | AWAC temperature |
-| `awac.expectile_tau` | 0.7 | Value expectile |
+| `awac.awac_weight_max` | 20.0 | Weight clip |
 
 TD bootstrap: `target = r + (1-done) * gamma^H * min_E Q_target(s', a')`.
 
-Actor weights: `exp((min_E Q(s,a) - V(s)) / lambda)`, clipped at `awac_weight_max`.
+Actor weights: `exp((min_E Q(s, a_pi) - min_E Q(s, a_data)) / lambda)`, where `a_pi` from a **frozen actor_pi snapshot** (BC copy) and training updates a separate **trainable actor**. No `V` network.
+
+Checkpoints default to `logs/<run_id>/checkpoints/` (`run_root_dir` in yaml or shell).
 
 ## Smoke tests
 
@@ -93,12 +95,14 @@ accelerate launch starVLA/training/train_awac_critic.py \
   --trainer.critic_max_train_steps 10 \
   --datasets.awac_data.per_device_batch_size 1
 
-# Actor — 10 steps
+# Actor — 10 steps (must use QwenPI_AWAC)
 accelerate launch starVLA/training/train_awac_actor.py \
   --config_yaml examples/calvin/train_files/starvla_awac_calvin.yaml \
+  --framework.name QwenPI_AWAC \
   --trainer.actor_max_train_steps 10 \
   --trainer.awac_critic_checkpoint <critic.pt> \
-  --trainer.pretrained_checkpoint <bc.pt>
+  --trainer.pretrained_checkpoint <bc.pt> \
+  --datasets.awac_data.per_device_batch_size 1
 ```
 
 Check logs for:
@@ -113,7 +117,6 @@ Check logs for:
 |------|------|
 | `starVLA/dataloader/awac_transition_dataset.py` | `(s,a,r,s',a',done)` loader |
 | `starVLA/model/modules/critic/awac_q_critic.py` | Q network |
-| `starVLA/model/modules/critic/awac_v_network.py` | Expectile V |
 | `starVLA/model/framework/VLM4A/QwenPI_awac.py` | Weighted actor |
 | `starVLA/training/train_awac_critic.py` | Phase 1 |
 | `starVLA/training/train_awac_actor.py` | Phase 2 |

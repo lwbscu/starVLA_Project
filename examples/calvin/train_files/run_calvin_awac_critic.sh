@@ -1,35 +1,44 @@
 #!/usr/bin/env bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+# Phase 1: train Q critic only (BC actor frozen; TD loss, no V network).
+set -euo pipefail
+
+cd "$(dirname "$0")/../../.."
+
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export WANDB_MODE=${WANDB_MODE:-online}
+export NO_ALBUMENTATIONS_UPDATE=${NO_ALBUMENTATIONS_UPDATE:-1}
+export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 Framework_name=QwenPI
 base_vlm=./playground/Pretrained_models/Qwen3.5-9B
 config_yaml=./examples/calvin/train_files/starvla_awac_calvin.yaml
 calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
+calvin_dataset_name=calvin_task_ABC_D
 data_mix=calvin_abc_d_h200
 bc_checkpoint=./results/Checkpoints/your_bc_run/checkpoints/steps_30000_pytorch_model.pt
-run_root_dir=./results/Checkpoints
-run_id=awac_calvin_critic
+run_root_dir=${run_root_dir:-logs}
+run_id=${run_id:-awac_calvin_critic}
+num_processes=${num_processes:-8}
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
 
-# Optional: run once before first AWAC training if parquet has no reward/done columns yet.
+# Run once before first AWAC training if parquet has no reward/done columns:
 # python examples/calvin/scripts/prepare_awac_rewards.py \
-#   --dataset_root "${calvin_data_root}/<your_dataset_folder_name>" \
+#   --dataset_root "${calvin_data_root}/${calvin_dataset_name}" \
 #   --action_horizon 8 --gamma 0.996
 
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 8 \
+  --num_processes "${num_processes}" \
   starVLA/training/train_awac_critic.py \
   --config_yaml "${config_yaml}" \
   --framework.name "${Framework_name}" \
   --framework.qwenvl.base_vlm "${base_vlm}" \
   --datasets.awac_data.data_root_dir "${calvin_data_root}" \
-  --datasets.vla_data.data_root_dir "${calvin_data_root}" \
   --datasets.awac_data.data_mix "${data_mix}" \
-  --datasets.vla_data.data_mix "${data_mix}" \
   --trainer.pretrained_checkpoint "${bc_checkpoint}" \
   --trainer.critic_max_train_steps 50000 \
   --trainer.save_interval 5000 \

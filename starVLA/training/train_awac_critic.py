@@ -1,31 +1,29 @@
 # Copyright 2025 starVLA community. All rights reserved.
-"""Phase 1: AWAC critic (Q + expectile V) training."""
+"""Phase 1: AWAC Q-critic training (TD loss only, no V network)."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import time
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
-from torch.utils.tensorboard import SummaryWriter
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from omegaconf import OmegaConf
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import get_scheduler
 
 from starVLA.dataloader.awac_transition_dataset import build_awac_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
-from starVLA.model.modules.critic import AWACQCritic, AWACValueNetwork, soft_update_target
-from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
+from starVLA.model.modules.critic import AWACQCritic, soft_update_target
+from starVLA.training.awac_train_utils import assert_module_frozen, freeze_module
+from starVLA.training.trainer_utils.config_tracker import wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, normalize_dotlist_args
 
 deepspeed_plugin = DeepSpeedPlugin()
@@ -43,13 +41,12 @@ def setup_directories(cfg) -> Path:
 
 
 class AWACCriticTrainer(TrainerUtils):
-    def __init__(self, cfg, actor, critic, critic_target, value_net, dataloader, optimizer, lr_scheduler, accelerator):
+    def __init__(self, cfg, actor, critic, critic_target, dataloader, optimizer, lr_scheduler, accelerator):
         self.config = cfg
         self.actor = actor
         self.critic = critic
         self.critic_target = critic_target
-        self.value_net = value_net
-        self.model = nn.ModuleDict({"critic": critic, "value_net": value_net})
+        self.model = critic
         self.dataloader = dataloader
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
@@ -81,9 +78,8 @@ class AWACCriticTrainer(TrainerUtils):
         last_lrs = self.lr_scheduler.get_last_lr()
         self.tb_writer.add_scalar("learning_rate", last_lrs[0], step)
 
-    def _train_modules(self) -> tuple[AWACQCritic, AWACValueNetwork]:
-        bundle = self.accelerator.unwrap_model(self.model)
-        return bundle["critic"], bundle["value_net"]
+    def _unwrap_critic(self) -> AWACQCritic:
+        return self.accelerator.unwrap_model(self.model)
 
     def _finish_logging(self) -> None:
         if not self.accelerator.is_main_process:
@@ -98,18 +94,15 @@ class AWACCriticTrainer(TrainerUtils):
         rank = dist.get_rank() if dist.is_initialized() else 0
         set_seed(self.config.seed + rank)
 
-        self.actor.eval()
-        for param in self.actor.parameters():
-            param.requires_grad = False
-
-        self.critic_target.eval()
-        for param in self.critic_target.parameters():
-            param.requires_grad = False
+        # Phase 1: only train Q critic; BC actor is a fixed initialization source.
+        freeze_module(self.actor, eval_mode=True)
+        assert_module_frozen(self.actor, "Actor (critic phase)")
+        freeze_module(self.critic_target, eval_mode=True)
 
         modules = [self.model, self.optimizer, self.dataloader]
         prepared = self.setup_distributed_training(self.accelerator, *modules)
         self.model, self.optimizer, self.dataloader = prepared[:3]
-        unwrapped_critic, self.value_net = self._train_modules()
+        unwrapped_critic = self._unwrap_critic()
         self.critic = unwrapped_critic
         self.critic_target.load_state_dict(unwrapped_critic.state_dict())
         self.critic_target.to(self.accelerator.device)
@@ -123,6 +116,8 @@ class AWACCriticTrainer(TrainerUtils):
                 group="awac-critic",
             )
         self._init_tensorboard()
+        if self.accelerator.is_main_process:
+            logger.info("AWAC critic phase: actor frozen; training Q network only.")
 
     def _save_checkpoint(self):
         if not self.accelerator.is_main_process:
@@ -134,9 +129,8 @@ class AWACCriticTrainer(TrainerUtils):
             f"steps_{self.completed_steps}_critic.pt",
         )
         payload = {
-            "critic": self._train_modules()[0].state_dict(),
+            "critic": self._unwrap_critic().state_dict(),
             "critic_target": self.critic_target.state_dict(),
-            "value_net": self._train_modules()[1].state_dict(),
             "steps": self.completed_steps,
             "awac": OmegaConf.to_container(self.config.awac, resolve=True),
         }
@@ -149,7 +143,6 @@ class AWACCriticTrainer(TrainerUtils):
         gamma = float(self.awac_cfg.gamma)
         horizon = int(self.config.framework.action_model.action_horizon)
         polyak = float(self.awac_cfg.polyak_tau)
-        expectile_tau = float(self.awac_cfg.expectile_tau)
 
         data_iter = iter(self.dataloader)
         progress = tqdm(
@@ -170,28 +163,15 @@ class AWACCriticTrainer(TrainerUtils):
 
             self.optimizer.zero_grad()
             with self.accelerator.autocast():
-                critic, value_net = self._train_modules()
+                critic = self._unwrap_critic()
                 critic_loss, critic_metrics = critic.td_loss(
                     batch,
                     self.critic_target,
                     gamma=gamma,
                     action_horizon=horizon,
                 )
-                with torch.no_grad():
-                    q_behavior = critic.min_q(
-                        batch["image"],
-                        batch["lang"],
-                        batch["action"],
-                        state=batch.get("state"),
-                    ).squeeze(-1)
-                value_loss, value_metrics = value_net.expectile_loss(
-                    batch,
-                    q_target=q_behavior,
-                    tau=expectile_tau,
-                )
-                total_loss = critic_loss + value_loss
 
-            self.accelerator.backward(total_loss)
+            self.accelerator.backward(critic_loss)
             if self.config.trainer.get("max_grad_norm"):
                 self.accelerator.clip_grad_norm_(
                     self.model.parameters(),
@@ -200,13 +180,13 @@ class AWACCriticTrainer(TrainerUtils):
             self.optimizer.step()
             self.lr_scheduler.step()
 
-            soft_update_target(self.critic_target, self._train_modules()[0], polyak)
+            soft_update_target(self.critic_target, self._unwrap_critic(), polyak)
 
             self.completed_steps += 1
             progress.update(1)
 
             if self.completed_steps % self.config.trainer.logging_frequency == 0:
-                metrics = {**critic_metrics, **value_metrics, "total_loss": float(total_loss.detach().cpu())}
+                metrics = {**critic_metrics, "total_loss": float(critic_loss.detach().cpu())}
                 self._log_metrics(metrics)
                 progress.set_postfix(metrics)
 
@@ -232,14 +212,15 @@ def build_critic_modules(cfg, actor):
         dim_feedforward=int(awac_cfg.get("dim_feedforward", 2048)),
         freeze_visual=awac_cfg.get("freeze_visual", True) not in ["False", False],
         dropout=float(awac_cfg.get("dropout", 0.1)),
+        max_vision_tokens=int(awac_cfg.get("max_vision_tokens", 256)),
+        max_text_tokens=int(awac_cfg.get("max_text_tokens", 128)),
     )
     critic = AWACQCritic(**critic_kwargs)
     critic_target = AWACQCritic(**critic_kwargs)
     critic_target.load_state_dict(critic.state_dict())
     for param in critic_target.parameters():
         param.requires_grad = False
-    value_net = AWACValueNetwork(critic=critic, hidden_dim=int(awac_cfg.get("value_hidden_dim", 256)))
-    return critic, critic_target, value_net
+    return critic, critic_target
 
 
 def main(cfg):
@@ -251,11 +232,12 @@ def main(cfg):
     if pretrained:
         TrainerUtils.load_pretrained_backbones(actor, pretrained)
 
-    critic, critic_target, value_net = build_critic_modules(cfg, actor)
+    critic, critic_target = build_critic_modules(cfg, actor)
     dataloader = build_awac_dataloader(cfg)
 
-    params = list(critic.parameters()) + list(value_net.parameters())
-    trainable = [p for p in params if p.requires_grad]
+    trainable = [p for p in critic.parameters() if p.requires_grad]
+    if not trainable:
+        raise RuntimeError("AWAC critic has no trainable parameters.")
     optimizer = torch.optim.AdamW(
         trainable,
         lr=float(cfg.trainer.learning_rate.critic),
@@ -274,7 +256,6 @@ def main(cfg):
         actor=actor,
         critic=critic,
         critic_target=critic_target,
-        value_net=value_net,
         dataloader=dataloader,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,

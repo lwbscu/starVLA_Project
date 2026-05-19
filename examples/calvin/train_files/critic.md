@@ -12,15 +12,16 @@
 
 两阶段、顺序执行（不交替）：
 
-1. **Critic 阶段**：用离线轨迹训练 Q 网络与 V 网络。  
-2. **Actor 阶段**：冻结 Critic，用 AWAC 权重对行为克隆（flow-matching）损失加权，微调策略。
+1. **Critic 阶段**：用离线轨迹训练 Q 网络（TD loss）；**BC actor 全程冻结**，仅作 VLM/visual 初始化来源。  
+2. **Actor 阶段**：**Q critic 全程冻结**；维护 **可训练 actor** + **冻结 actor_pi 快照**（BC 加载后 deepcopy，仅用于 `predict_action`）；\(A=Q(s,a_\pi)-Q(s,a_{\text{data}})\) 后对可训练 actor 做加权 flow-matching。
 
 Actor 主干仍为 `QwenPI`（VLM + Layerwise flow-matching action head）；Critic 单独一套网络，视觉塔从 BC actor **复制初始化**。
 
 ### 1.2 Critic：Q 网络
 
 - **输入**：当前观测 `s`（多相机图像 + 语言 + 可选 proprio）、动作块 `a`（长度 `H` 的连续动作）。  
-- **结构**：复制 actor 的 Qwen visual encoder → 与 state/action token 拼接 → 6 层 Transformer → `E` 个可学习 query token → 每个 head 输出标量 Q，形状 `(B, E, 1)`。  
+- **结构**：复制 actor 的 **visual 塔**（头部相机 view0、腕部相机 view1 各一路）→ `(B,2,D)`；语言 **tokenize + embed** 后 mean pool → `(B,1,D)`；state/action 线性投影 → `(B,1,D)` / `(B,H,D)`；可学习 query → `(B,E,D)`；拼接后过 6 层 Transformer，**query 位置** 输出 Q。  
+  Token 顺序：`[vision(2) | text(1) | action(H) | state(1) | query(E)]`。  
 - **TD 目标**（chunk 时间自举）：
 
   \[
@@ -32,20 +33,19 @@ Actor 主干仍为 `QwenPI`（VLM + Layerwise flow-matching action head）；Cri
   - `a'`：数据集行为动作（下一 chunk）。  
   - Target 网络：Polyak 软更新（`polyak_tau=0.005`）。
 
-### 1.3 Critic：V 网络（Expectile）
+### 1.3 Actor：Q 对比优势加权（仅 Q，无 V）
 
-标准 AWAC 需要状态价值 `V(s)`。用 **expectile 回归**（τ 默认 0.7）拟合行为动作下的 \(\min_e Q(s,a)\)，与 Q 同阶段训练。
-
-### 1.4 Actor：加权 flow-matching
-
-Critic 冻结后，对每个样本：
+Actor 阶段在训练时在线计算（**critic 与 actor_pi 均冻结**）：
 
 \[
-w = \mathrm{clip}\Big(\exp\big(\frac{\min_e Q(s,a) - V(s)}{\lambda}\big),\; w_{\max}\Big)
+a_\pi = \pi_{\text{frozen}}(s),\quad
+A = \min_e Q(s, a_\pi) - \min_e Q(s, a_{\text{data}}),\quad
+w = \mathrm{clip}\Big(\exp\big(\frac{A}{\lambda}\big),\; w_{\max}\Big)
 \]
 
-- 使用 **min over E**（非 mean）。  
-- 对 per-sample flow-matching loss 加权平均（`QwenPI_AWAC`）。  
+- \(\pi_{\text{frozen}}\)：`actor_pi` 快照（BC 权重 deepcopy，Actor 阶段不更新），仅用于算 \(a_\pi\)。  
+- \(\pi_{\text{train}}\)：可训练 actor，用于加权 flow-matching loss 并保存 checkpoint。  
+- \(a_{\text{data}}\)：离线数据里的行为动作 chunk。  
 - 默认 `λ=0.5`，`w_max=20`。
 
 ---
@@ -151,7 +151,7 @@ accelerate launch \
 tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 ```
 
-标量：`critic_loss`、`value_loss`、`total_loss`、`q_mean`、`target_mean`、`v_mean`、`learning_rate`。
+标量：`critic_loss`、`q_mean`、`target_mean`、`learning_rate`。
 
 ### 3.3 Shell 里常改的参数（`run_calvin_awac_critic.sh`）
 
@@ -185,7 +185,8 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 | `num_q_heads` | 2 | Q 头数 E |
 | `hidden_dim` | 512 | Critic token 维度 |
 | `transformer_layers` | 6 | Transformer 层数 |
-| `expectile_tau` | 0.7 | V 网络 expectile |
+| `awac_lambda` | 0.5 | Actor 权重温度 λ |
+| `awac_weight_max` | 20 | Actor 权重上限 |
 | `polyak_tau` | 0.005 | Target 软更新 |
 | `freeze_visual` | true | 是否冻结复制的 visual |
 
@@ -255,8 +256,9 @@ accelerate launch \
 
 | 变量 | 含义 |
 |------|------|
-| `bc_checkpoint` | 初始化 actor（与 BC 相同权重） |
+| `bc_checkpoint` | 初始化 **可训练 actor**（与 BC 相同权重） |
 | `critic_checkpoint` | Phase 1 的 `*_critic.pt`（**必填**） |
+| （自动） | 加载 BC 后对 actor 做 `deepcopy` 得到 **冻结 actor_pi**，仅用于算 \(a_\pi\)，不写入 checkpoint |
 | `run_id` | 建议与 critic 阶段区分，如 `awac_calvin_actor` |
 | `--trainer.freeze_modules` | 默认 `qwen_vl_interface`，只训 action head |
 

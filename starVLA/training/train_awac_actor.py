@@ -1,9 +1,10 @@
 # Copyright 2025 starVLA community. All rights reserved.
-"""Phase 2: AWAC actor fine-tuning with frozen critic."""
+"""Phase 2: AWAC actor with Q(s, a_pi) - Q(s, a_data) weighting (no V network)."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 from pathlib import Path
 
@@ -20,8 +21,9 @@ from transformers import get_scheduler
 from starVLA.dataloader.awac_transition_dataset import build_awac_dataloader
 from starVLA.model.framework.VLM4A.QwenPI_awac import Qwen_PI_AWAC
 from starVLA.model.framework.share_tools import apply_config_compat
-from starVLA.model.modules.critic import AWACQCritic, AWACValueNetwork
+from starVLA.model.modules.critic import AWACQCritic
 from starVLA.model.lora_utils import apply_lora_if_enabled
+from starVLA.training.awac_train_utils import assert_module_frozen, freeze_module
 from starVLA.training.trainer_utils.config_tracker import wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
 
@@ -40,8 +42,13 @@ def setup_directories(cfg) -> Path:
 
 
 def load_awac_critic_checkpoint(actor, cfg, device):
+    """Load frozen Q critic for advantage weighting only."""
     ckpt_path = cfg.trainer.awac_critic_checkpoint
     payload = torch.load(ckpt_path, map_location="cpu")
+    if "value_net" in payload:
+        logger.warning(
+            "Checkpoint contains legacy value_net weights; ignoring them (AWAC uses Q-only advantage)."
+        )
     awac_cfg = cfg.awac
     action_cfg = cfg.framework.action_model
     critic = AWACQCritic(
@@ -55,57 +62,98 @@ def load_awac_critic_checkpoint(actor, cfg, device):
         nhead=int(awac_cfg.get("nhead", 8)),
         dim_feedforward=int(awac_cfg.get("dim_feedforward", 2048)),
         freeze_visual=True,
+        max_vision_tokens=int(awac_cfg.get("max_vision_tokens", 256)),
+        max_text_tokens=int(awac_cfg.get("max_text_tokens", 128)),
     )
-    value_net = AWACValueNetwork(critic=critic, hidden_dim=int(awac_cfg.get("value_hidden_dim", 256)))
     critic.load_state_dict(payload["critic"], strict=False)
-    value_net.load_state_dict(payload["value_net"], strict=False)
     critic.to(device)
-    value_net.to(device)
-    critic.eval()
-    value_net.eval()
-    for param in critic.parameters():
-        param.requires_grad = False
-    for param in value_net.parameters():
-        param.requires_grad = False
-    return critic, value_net
+    freeze_module(critic, eval_mode=True)
+    assert_module_frozen(critic, "Critic (actor phase)")
+    return critic
 
 
-def batch_to_actor_examples(batch):
+def batch_to_actor_examples(batch, include_action: bool = True):
     examples = []
     batch_size = batch["action"].shape[0]
     for i in range(batch_size):
         ex = {
             "image": batch["image"][i],
             "lang": batch["lang"][i],
-            "action": batch["action"][i].detach().cpu().numpy(),
         }
+        if include_action:
+            ex["action"] = batch["action"][i].detach().cpu().numpy()
         if "state" in batch:
             ex["state"] = batch["state"][i].detach().cpu().numpy()
         examples.append(ex)
     return examples
 
 
-def compute_awac_weights(critic, value_net, batch, awac_cfg):
-    with torch.no_grad():
-        q_min = critic.min_q(
+def build_frozen_actor_pi_snapshot(actor_train: Qwen_PI_AWAC) -> Qwen_PI_AWAC:
+    """
+    Frozen policy snapshot for advantage computation only.
+
+    Taken once after BC weights are loaded; never updated during actor phase.
+    """
+    actor_pi = copy.deepcopy(actor_train)
+    freeze_module(actor_pi, eval_mode=True)
+    assert_module_frozen(actor_pi, "Actor_pi (advantage snapshot)")
+    return actor_pi
+
+
+def predict_action_tensor(actor_pi: Qwen_PI_AWAC, batch) -> torch.Tensor:
+    """Run frozen actor_pi inference to get a_pi with shape (B, H, action_dim)."""
+    infer_examples = batch_to_actor_examples(batch, include_action=False)
+    pred = actor_pi.predict_action(infer_examples)
+    actions = torch.as_tensor(
+        pred["normalized_actions"],
+        device=batch["action"].device,
+        dtype=batch["action"].dtype,
+    )
+    horizon = int(actor_pi.action_horizon)
+    if actions.ndim == 2:
+        actions = actions.unsqueeze(1)
+    return actions[:, -horizon:, :]
+
+
+def compute_awac_weights(actor_pi, critic, batch, awac_cfg) -> tuple[torch.Tensor, dict[str, float]]:
+    """
+    Advantage: A = Q(s, a_pi) - Q(s, a_data).
+
+    a_pi comes from the frozen actor_pi snapshot; a_data from the offline batch.
+    Critic stays frozen (no grad).
+    """
+    critic.eval()
+    with torch.inference_mode():
+        action_pi = predict_action_tensor(actor_pi, batch)
+        q_pi = critic.min_q(
+            batch["image"],
+            batch["lang"],
+            action_pi,
+            state=batch.get("state"),
+        ).squeeze(-1)
+        q_data = critic.min_q(
             batch["image"],
             batch["lang"],
             batch["action"],
             state=batch.get("state"),
         ).squeeze(-1)
-        v = value_net(batch["image"], batch["lang"], state=batch.get("state")).squeeze(-1)
-        adv = q_min - v
+        adv = q_pi - q_data
         weights = torch.exp(adv / float(awac_cfg.awac_lambda))
         weights = torch.clamp(weights, max=float(awac_cfg.awac_weight_max))
-    return weights
+    metrics = {
+        "awac_adv_mean": float(adv.detach().mean().cpu()),
+        "q_pi_mean": float(q_pi.detach().mean().cpu()),
+        "q_data_mean": float(q_data.detach().mean().cpu()),
+    }
+    return weights, metrics
 
 
 class AWACActorTrainer(TrainerUtils):
-    def __init__(self, cfg, actor, critic, value_net, dataloader, optimizer, lr_scheduler, accelerator):
+    def __init__(self, cfg, actor, actor_pi, critic, dataloader, optimizer, lr_scheduler, accelerator):
         self.config = cfg
         self.actor = actor
+        self.actor_pi = actor_pi
         self.critic = critic
-        self.value_net = value_net
         self.dataloader = dataloader
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
@@ -119,11 +167,29 @@ class AWACActorTrainer(TrainerUtils):
         freeze_modules = getattr(self.config.trainer, "freeze_modules", None)
         self.actor = self.freeze_backbones(self.actor, freeze_modules=freeze_modules)
 
+        freeze_module(self.critic, eval_mode=True)
+        assert_module_frozen(self.critic, "Critic (actor phase)")
+        freeze_module(self.actor_pi, eval_mode=True)
+        assert_module_frozen(self.actor_pi, "Actor_pi (advantage snapshot)")
+
         modules = [self.actor, self.optimizer, self.dataloader]
         prepared = self.setup_distributed_training(self.accelerator, *modules)
         self.actor, self.optimizer, self.dataloader = prepared
 
+        frozen_params = {id(p) for p in self.critic.parameters()} | {id(p) for p in self.actor_pi.parameters()}
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                if id(param) in frozen_params:
+                    raise RuntimeError(
+                        "Optimizer must only include trainable actor parameters "
+                        "(not critic or frozen actor_pi)."
+                    )
+
         if self.accelerator.is_main_process:
+            logger.info(
+                "AWAC actor phase: trainable actor + frozen actor_pi snapshot; "
+                "critic frozen; A = Q(s,a_pi) - Q(s,a_data)."
+            )
             wandb.init(
                 name=self.config.run_id,
                 dir=os.path.join(self.config.output_dir, "wandb"),
@@ -165,22 +231,24 @@ class AWACActorTrainer(TrainerUtils):
                 if key in batch and torch.is_tensor(batch[key]):
                     batch[key] = batch[key].to(self.accelerator.device)
 
-            examples = batch_to_actor_examples(batch)
-            weights = compute_awac_weights(
-                self.accelerator.unwrap_model(self.critic),
-                self.accelerator.unwrap_model(self.value_net),
+            actor_train = self.accelerator.unwrap_model(self.actor)
+            weights, awac_metrics = compute_awac_weights(
+                self.actor_pi,
+                self.critic,
                 batch,
                 self.config.awac,
             )
 
+            examples = batch_to_actor_examples(batch)
             self.optimizer.zero_grad()
             with self.accelerator.accumulate(self.actor):
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    output = self.accelerator.unwrap_model(self.actor)(examples, awac_weights=weights)
+                    output = actor_train(examples, awac_weights=weights)
                     loss = output["action_loss"]
                 self.accelerator.backward(loss)
                 if self.config.trainer.get("max_grad_norm"):
-                    self.accelerator.clip_grad_norm_(self.actor.parameters(), self.config.trainer.max_grad_norm)
+                    actor_params = [p for p in self.actor.parameters() if p.requires_grad]
+                    self.accelerator.clip_grad_norm_(actor_params, self.config.trainer.max_grad_norm)
                 self.optimizer.step()
                 if self.accelerator.sync_gradients:
                     self.lr_scheduler.step()
@@ -193,6 +261,7 @@ class AWACActorTrainer(TrainerUtils):
                 metrics = {
                     "action_loss": float(loss.detach().cpu()),
                     "awac_weight_mean": float(weights.detach().mean().cpu()),
+                    **awac_metrics,
                 }
                 if self.accelerator.is_main_process:
                     wandb.log(metrics, step=self.completed_steps)
@@ -216,8 +285,11 @@ def main(cfg):
     if pretrained:
         TrainerUtils.load_pretrained_backbones(actor, pretrained)
 
+    actor_pi = build_frozen_actor_pi_snapshot(actor)
+
     device = accelerator.device
-    critic, value_net = load_awac_critic_checkpoint(actor, cfg, device)
+    actor_pi.to(device)
+    critic = load_awac_critic_checkpoint(actor, cfg, device)
 
     dataloader = build_awac_dataloader(cfg)
     param_groups = build_param_lr_groups(model=actor, cfg=cfg)
@@ -237,8 +309,8 @@ def main(cfg):
     trainer = AWACActorTrainer(
         cfg=cfg,
         actor=actor,
+        actor_pi=actor_pi,
         critic=critic,
-        value_net=value_net,
         dataloader=dataloader,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
