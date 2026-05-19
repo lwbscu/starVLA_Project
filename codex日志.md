@@ -820,3 +820,58 @@
 
 结果如何：
 生成新的调试 run：`logs/log_20260519_1640_qwen35_pi_rollout_debug_800step_cpuoffload`。训练 TensorBoard 清洁导出在 `tensorboard_complete`，验证有 `action_dit_loss/learning_rate/timing` 各 800 个 step，eval/rollout scalar 也已写入；critic TensorBoard 在 `tensorboard_critic`，验证 `critic_loss/value_loss/q_mean/target_mean/v_mean/total_loss/learning_rate` 各 120 个 step。可视化 mp4 已生成并用 ffprobe 验证：`mp4_3seq/*.mp4`、`rollout_lerobot_debug_3seq/videos/chunk-000/image/*.mp4`、`rollout_lerobot_debug_3seq/videos/chunk-000/wrist_image/*.mp4`。rollout 数据为 3 episodes、1080 frames、6 个 LeRobot 视频；3 个任务首子任务均失败，说明 600-step 本地 PI checkpoint 只能用于链路/后训练调试，不代表策略效果达标。AWAC reward 预处理成功写入 `step_reward/reward/done`；AWAC critic 120-step 成功保存 `awac_critic_pi_120step_state7_trimmed/checkpoints/steps_120_critic.pt`。修改文件：`starVLA/dataloader/awac_transition_dataset.py`、`codex日志.md`。验证：`py_compile` 通过；PI 训练跑满 800 step 但最终保存被 SIGKILL；rollout/mp4/LeRobot 写盘、AWAC 预处理、AWAC critic 120-step、TensorBoard event 反查均完成。
+
+## 2026-05-19 17:06
+
+问题是什么：
+用户要求用通俗易懂的方式解释当前项目从预训练/BC 到 rollout 再到 critic 的含义、实际怎么跑、相关命令脚本分别在哪些文件里，以及当前评估该怎么做，并要求输出为 `tmp.md`。
+
+解决思路：
+系统梳理 `README_zh.md`、`H200_批量训练命令行.md`、CALVIN 训练脚本、eval/policy server、rollout writer、AWAC reward/critic/actor 代码和已生成日志产物。将概念解释和可执行命令分成预训练、rollout、critic、评估四段，明确当前本地已跑通的是工程闭环而非策略效果；补充 rollout 数据作为 LeRobot 数据集给 AWAC 使用时需要 `prepare_awac_rewards.py` 和 `awac_debug_root/calvin_task_ABC_D` symlink 的原因。按项目规则在 `.gitignore` 中补充 `codex日志.md`。
+
+结果如何：
+已新增 `tmp.md`，其中包含当前真实状态、训练入口、rollout/eval 命令、critic 调试命令、输出目录和高标准检查清单；已修改 `.gitignore`，补入 `codex日志.md` 忽略项并保留 `AGENTS.md` 忽略。验证执行了 `git diff --check`，通过；当前改动为 `.gitignore`、`tmp.md` 和本日志追加。
+
+## 2026-05-19 17:14
+
+问题是什么：
+用户要求继续以 `logs/log_20260519_1640_qwen35_pi_rollout_debug_800step_cpuoffload` 为具体例子，解释这个 run 目录里各个文件和文件夹的含义与作用。
+
+解决思路：
+先用 `find`、`du`、关键 JSON/YAML/log 读取和 parquet 列检查梳理该目录真实结构。确认该 run 同时包含 PI 训练产物、policy server 日志、3 条 debug eval 的 `results.json/mp4`、LeRobot rollout 数据集、AWAC critic 多次尝试和 TensorBoard event；重点区分可用产物和占位/失败尝试目录，并指出 `steps_600` 是当前可用 checkpoint、800 step 训练最终被 SIGKILL、`awac_critic_pi_120step_state7_trimmed` 才是最终有效 critic 输出。
+
+结果如何：
+已在 `tmp.md` 追加第 7 节，逐项解释 `checkpoints/`、`configs/`、`terminal/`、`policy_server_pi_600/`、`mp4_3seq/`、`rollout_lerobot_debug_3seq/`、`awac_debug_root/`、critic 目录和 TensorBoard 目录的作用，并补充如何查看日志、results、parquet 字段、rollout analysis 和 critic warning。验证执行了 `git diff --check`，通过；本轮修改文件为 `tmp.md` 和 `codex日志.md`。
+
+## 2026-05-19 17:24
+
+问题是什么：
+用户说 H200 server1 任务已结束，要求现在给出最新“包含 state 等综合功能”的 PI 路线启动脚本和完整命令，仍然按三个 Qwen3.5 权重规格和既定卡分布运行：0.8B 用第 1 张卡，4B 用第 2-3 张卡，9B 用第 4-8 张卡。
+
+解决思路：
+沿用现有 `run_route_validation_train.sh` 的 state/proprio 开关，不临时拼接不可复现命令。新增 server1 专用脚本 `examples/calvin/train_files/run_h200_server1_pi_state_three_sizes.sh`：固定 `ROUTE=p4_pi`、`CONFIG_YAML=starvla_train_calvin_qwen35_pi_h200.yaml`、`INCLUDE_STATE=true`、`STATE_DIM=8`、`PI_STATE_DIM=8`，并保留 1000 step 保存一次、普通 checkpoint 只保留最新一个、长期保留 `10000/20000/30000` 的存储策略。脚本启动前会检查三个模型 `config.json`、CALVIN LeRobot 数据完整性和 `meta/info.json` 中的 state 维度，失败则直接报错退出。
+
+结果如何：
+新增脚本 `examples/calvin/train_files/run_h200_server1_pi_state_three_sizes.sh`，卡分布为 `0` 跑 Qwen3.5-0.8B、`1,2` 跑 Qwen3.5-4B、`3,4,5,6,7` 跑 Qwen3.5-9B，端口为 `33100/33110/33120`，日志默认写入 `logs/<日期>_h200_server1_pi_state_30k_v1/server1_pi_state/...`。验证通过：`bash -n examples/calvin/train_files/run_h200_server1_pi_state_three_sizes.sh`、`git diff --check -- examples/calvin/train_files/run_h200_server1_pi_state_three_sizes.sh`。注意：本轮开始前已有 `.gitignore`、`tmp.md` 和 `codex日志.md` 的未提交改动；为避免混入用户已有变更，提交时只应纳入新增脚本。
+
+## 2026-05-19 17:31
+
+问题是什么：
+用户贴出之前在 H200 上手动复制大段公共变量和函数启动三规格训练的方式，询问/说明之前是这样启动。当前目标是重新启动最新包含 state 的 PI 路线。
+
+解决思路：
+对照用户贴出的旧启动方式和当前新增脚本，指出旧方式存在两个关键风险：`conda activate starVLA_qwen35export PROJECT_ROOT=...` 缺少换行会导致 conda 参数错误；旧版 `launch_qwen_size` 没有透传 `INCLUDE_STATE/STATE_DIM/PI_STATE_DIM`，因此不适合确认启动 state 版 PI。建议在 server1 新终端中 `git pull --ff-only` 后直接运行 `examples/calvin/train_files/run_h200_server1_pi_state_three_sizes.sh`，该脚本固定 PI state 版、三规格卡分布和 checkpoint 保留策略，并在启动前检查 LeRobot state 维度。
+
+结果如何：
+本轮未修改代码。给用户提供了应替换旧手动启动块的完整命令、旧块的关键问题、日志目录和监控命令。提醒不要复用旧终端里已经定义过的函数，建议开新终端或直接执行新脚本。
+
+## 2026-05-19 17:48
+
+问题是什么：
+用户要求梳理项目中现有 CALVIN 评测脚本，精简统一为两个高层 eval 脚本：一个评测 `/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project/logs/20260519_h200_qwen_mix_30k_v1` 下各路线/各模型规格的最新 checkpoint；另一个评测 `/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project/logs/20260519_h200_server1_pi_state_30k_v1` 下 PI state 版三个模型规格的最新 checkpoint。同时用户反馈服务器 CALVIN 环境一直失败，需要明确 CALVIN eval 依赖。
+
+解决思路：
+梳理现有底层评测链路：`run_policy_server_debug.sh` 负责启动 StarVLA policy server，`eval_calvin.py` 负责 CALVIN 环境 rollout/eval/mp4/可选 LeRobot rollout 写盘，`cleanup_policy_server.py` 负责清理端口。新增两个高层脚本封装这些底层组件：`eval_h200_qwen_mix_latest.sh` 固定扫描 12 个 mix 训练 job，`eval_h200_server1_pi_state_latest.sh` 固定扫描 3 个 PI state job 并默认向 policy 发送 state。脚本会在启动前检查 StarVLA Python、CALVIN Python、CALVIN config、eval dataset、asset root、`cv2/GitPython/hydra/omegaconf/pybullet/calvin_agent/calvin_env/imageio/tyro/websockets/msgpack/jinja2/termcolor/tqdm/numpy` 和 imageio ffmpeg，避免 eval 跑到一半才暴露环境缺失。
+
+结果如何：
+新增 `examples/calvin/eval_files/eval_h200_qwen_mix_latest.sh` 和 `examples/calvin/eval_files/eval_h200_server1_pi_state_latest.sh`。前者默认评测 `logs/20260519_h200_qwen_mix_30k_v1` 的 `server1_oft/server2_adapter/server3_lora/server4_pi` 每个 `qwen35_0p8b/qwen35_4b/qwen35_9b` 最新 `steps_*_pytorch_model.pt`；后者默认评测 `logs/20260519_h200_server1_pi_state_30k_v1/server1_pi_state` 下三个规格最新 checkpoint，并设置 `SEND_STATE_TO_POLICY=1`。输出统一写入 `logs/calvin_eval_latest_*`，每个模型都有 policy server 日志、eval 日志、mp4/results.json 和批次 `summary.tsv`。验证通过：`bash -n` 两个脚本、`git diff --check`。未在本地实际跑 CALVIN/H200 eval。
