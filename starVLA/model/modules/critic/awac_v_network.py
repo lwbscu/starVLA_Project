@@ -24,7 +24,10 @@ class AWACValueNetwork(nn.Module):
         hidden_dim: int = 256,
     ):
         super().__init__()
-        self.critic = critic
+        # Share the critic feature encoder without registering the full critic
+        # as a child module. Registering it here duplicates parameters in the
+        # optimizer and breaks DeepSpeed's single-model prepare path.
+        object.__setattr__(self, "critic", critic)
         in_dim = critic.hidden_dim * 2
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
@@ -44,11 +47,11 @@ class AWACValueNetwork(nn.Module):
         visual_pool = visual_tokens.mean(dim=1)
 
         if state is None:
-            state = torch.zeros(batch_size, 1, self.critic.action_dim, device=device)
+            state = torch.zeros(batch_size, 1, self.critic.state_dim, device=device)
         if state.ndim == 2:
             state = state.unsqueeze(1)
-        state_flat = state[:, -1, :].to(device=device, dtype=visual_pool.dtype)
-        state_feat = self.critic.shared_proj(state_flat)
+        state_flat = state[:, -1, :].to(device=device, dtype=self.critic.state_proj.weight.dtype)
+        state_feat = self.critic.state_proj(state_flat)
         return torch.cat([visual_pool, state_feat], dim=-1)
 
     def forward(

@@ -1,5 +1,5 @@
 # Copyright 2025 starVLA community. All rights reserved.
-"""AWAC Q-critic with actor-copied visual encoder and token transformer."""
+"""AWAC Q-critic with actor vision features and token transformer."""
 
 from __future__ import annotations
 
@@ -39,24 +39,36 @@ class AWACQCritic(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        self.qwen_vl_interface = qwen_vl_interface
+        # Keep a reference to the actor VLM interface for preprocessing and for
+        # backbones that do not expose a standalone ``model.visual`` tower
+        # (for example Qwen3.5).  Store it outside ``_modules`` so the critic
+        # state dict, target critic deepcopy, and optimizer do not duplicate the
+        # full actor backbone.
+        object.__setattr__(self, "qwen_vl_interface", qwen_vl_interface)
         self.action_dim = action_dim
         self.state_dim = state_dim
         self.action_horizon = action_horizon
         self.hidden_dim = hidden_dim
         self.num_q_heads = num_q_heads
 
-        actor_visual = qwen_vl_interface.model.visual
-        self.visual = copy.deepcopy(actor_visual)
-        self.visual.load_state_dict(actor_visual.state_dict())
-
         if freeze_visual:
-            for param in self.visual.parameters():
+            qwen_vl_interface.eval()
+            for param in qwen_vl_interface.parameters():
                 param.requires_grad = False
+
+        actor_visual = getattr(getattr(qwen_vl_interface, "model", None), "visual", None)
+        self.visual = None
+        if actor_visual is not None:
+            self.visual = copy.deepcopy(actor_visual)
+            self.visual.load_state_dict(actor_visual.state_dict())
+            if freeze_visual:
+                for param in self.visual.parameters():
+                    param.requires_grad = False
 
         visual_out_dim = self._infer_visual_dim()
         self.visual_proj = nn.Linear(visual_out_dim, hidden_dim)
-        self.shared_proj = nn.Linear(action_dim, hidden_dim)
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        self.state_proj = nn.Linear(state_dim, hidden_dim)
         self.query_tokens = nn.Parameter(torch.randn(num_q_heads, hidden_dim) * 0.02)
 
         max_tokens = 1 + action_horizon + 16 + num_q_heads
@@ -75,10 +87,22 @@ class AWACQCritic(nn.Module):
         self.q_head = nn.Linear(hidden_dim, 1)
 
     def _infer_visual_dim(self) -> int:
+        if self.visual is None:
+            model_cfg = getattr(getattr(self.qwen_vl_interface, "model", None), "config", None)
+            text_cfg = getattr(model_cfg, "text_config", model_cfg)
+            return int(getattr(model_cfg, "hidden_size", getattr(text_cfg, "hidden_size", self.hidden_dim)))
         for tensor in self.visual.parameters():
             if tensor.ndim == 2:
                 return tensor.shape[1]
         return self.hidden_dim
+
+    def _move_vlm_interface(self, device: torch.device) -> None:
+        try:
+            current_device = next(self.qwen_vl_interface.parameters()).device
+        except StopIteration:
+            return
+        if current_device != device:
+            self.qwen_vl_interface.to(device)
 
     def _encode_view(
         self,
@@ -89,21 +113,35 @@ class AWACQCritic(nn.Module):
         num_views = len(batch_images[0])
         view_embeds = []
         device = next(self.parameters()).device
+        self._move_vlm_interface(device)
         for view_idx in range(num_views):
             view_batch = [[sample[view_idx]] for sample in batch_images]
             inputs = self.qwen_vl_interface.build_qwenvl_inputs(
                 images=view_batch,
                 instructions=instructions,
             )
-            pixel_values = inputs["pixel_values"].to(device)
-            grid_thw = inputs.get("image_grid_thw")
-            if grid_thw is not None:
-                grid_thw = grid_thw.to(device)
-            with torch.set_grad_enabled(any(p.requires_grad for p in self.visual.parameters())):
-                if grid_thw is not None:
-                    visual_out = self.visual(pixel_values, grid_thw=grid_thw)
-                else:
-                    visual_out = self.visual(pixel_values)
+            inputs = {
+                key: value.to(device) if torch.is_tensor(value) else value
+                for key, value in inputs.items()
+            }
+
+            if self.visual is not None:
+                pixel_values = inputs["pixel_values"]
+                grid_thw = inputs.get("image_grid_thw")
+                with torch.set_grad_enabled(any(p.requires_grad for p in self.visual.parameters())):
+                    if grid_thw is not None:
+                        visual_out = self.visual(pixel_values, grid_thw=grid_thw)
+                    else:
+                        visual_out = self.visual(pixel_values)
+            else:
+                with torch.set_grad_enabled(any(p.requires_grad for p in self.qwen_vl_interface.parameters())):
+                    outputs = self.qwen_vl_interface(
+                        **inputs,
+                        output_attentions=False,
+                        output_hidden_states=True,
+                        return_dict=True,
+                    )
+                    visual_out = outputs.hidden_states[-1]
             if isinstance(visual_out, tuple):
                 visual_out = visual_out[0]
             if visual_out.ndim == 3:
@@ -112,6 +150,7 @@ class AWACQCritic(nn.Module):
                 pooled = visual_out
             else:
                 pooled = visual_out.reshape(visual_out.shape[0], -1, visual_out.shape[-1]).mean(dim=1)
+            pooled = pooled.to(device=device, dtype=self.visual_proj.weight.dtype)
             view_embeds.append(self.visual_proj(pooled))
         return torch.stack(view_embeds, dim=1)
 
@@ -126,15 +165,17 @@ class AWACQCritic(nn.Module):
         device = action.device
 
         if state is None:
-            state = torch.zeros(batch_size, 1, self.action_dim, device=device, dtype=action.dtype)
+            state = torch.zeros(batch_size, 1, self.state_dim, device=device, dtype=action.dtype)
         if state.ndim == 2:
             state = state.unsqueeze(1)
-        state_flat = state[:, -1, :]
-        state_token = self.shared_proj(state_flat).unsqueeze(1)
+        proj_dtype = self.action_proj.weight.dtype
+        state_flat = state[:, -1, :].to(device=device, dtype=proj_dtype)
+        state_token = self.state_proj(state_flat).unsqueeze(1)
 
+        action = action.to(device=device, dtype=proj_dtype)
         bsz, horizon, adim = action.shape
         action_flat = action.reshape(bsz * horizon, adim)
-        action_tokens = self.shared_proj(action_flat).reshape(bsz, horizon, self.hidden_dim)
+        action_tokens = self.action_proj(action_flat).reshape(bsz, horizon, self.hidden_dim)
 
         visual_tokens = self._encode_view(batch_images, instructions)
         query_tokens = self.query_tokens.unsqueeze(0).expand(batch_size, -1, -1)
@@ -187,10 +228,12 @@ class AWACQCritic(nn.Module):
                 state=batch.get("next_state"),
             )
             q_next_min = q_next.min(dim=1).values.squeeze(-1)
-            bootstrap = (1.0 - batch["done"]) * (gamma ** action_horizon)
-            target = batch["reward"] + bootstrap * q_next_min
+            done = batch["done"].to(device=q_next_min.device, dtype=q_next_min.dtype)
+            reward = batch["reward"].to(device=q_next_min.device, dtype=q_next_min.dtype)
+            bootstrap = (1.0 - done) * (gamma ** action_horizon)
+            target = reward + bootstrap * q_next_min
 
-        target_heads = target.unsqueeze(1).expand(-1, self.num_q_heads)
+        target_heads = target.to(dtype=q_pred.dtype).unsqueeze(1).expand(-1, self.num_q_heads)
         loss = F.mse_loss(q_pred.squeeze(-1), target_heads)
         metrics = {
             "critic_loss": float(loss.detach().cpu()),

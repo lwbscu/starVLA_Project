@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import time
@@ -12,6 +11,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from torch.utils.tensorboard import SummaryWriter
@@ -49,6 +49,7 @@ class AWACCriticTrainer(TrainerUtils):
         self.critic = critic
         self.critic_target = critic_target
         self.value_net = value_net
+        self.model = nn.ModuleDict({"critic": critic, "value_net": value_net})
         self.dataloader = dataloader
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
@@ -80,6 +81,10 @@ class AWACCriticTrainer(TrainerUtils):
         last_lrs = self.lr_scheduler.get_last_lr()
         self.tb_writer.add_scalar("learning_rate", last_lrs[0], step)
 
+    def _train_modules(self) -> tuple[AWACQCritic, AWACValueNetwork]:
+        bundle = self.accelerator.unwrap_model(self.model)
+        return bundle["critic"], bundle["value_net"]
+
     def _finish_logging(self) -> None:
         if not self.accelerator.is_main_process:
             return
@@ -101,10 +106,11 @@ class AWACCriticTrainer(TrainerUtils):
         for param in self.critic_target.parameters():
             param.requires_grad = False
 
-        modules = [self.critic, self.value_net, self.optimizer, self.dataloader]
+        modules = [self.model, self.optimizer, self.dataloader]
         prepared = self.setup_distributed_training(self.accelerator, *modules)
-        self.critic, self.value_net, self.optimizer, self.dataloader = prepared[:4]
-        unwrapped_critic = self.accelerator.unwrap_model(self.critic)
+        self.model, self.optimizer, self.dataloader = prepared[:3]
+        unwrapped_critic, self.value_net = self._train_modules()
+        self.critic = unwrapped_critic
         self.critic_target.load_state_dict(unwrapped_critic.state_dict())
         self.critic_target.to(self.accelerator.device)
 
@@ -128,9 +134,9 @@ class AWACCriticTrainer(TrainerUtils):
             f"steps_{self.completed_steps}_critic.pt",
         )
         payload = {
-            "critic": self.accelerator.unwrap_model(self.critic).state_dict(),
-            "critic_target": self.accelerator.unwrap_model(self.critic_target).state_dict(),
-            "value_net": self.accelerator.unwrap_model(self.value_net).state_dict(),
+            "critic": self._train_modules()[0].state_dict(),
+            "critic_target": self.critic_target.state_dict(),
+            "value_net": self._train_modules()[1].state_dict(),
             "steps": self.completed_steps,
             "awac": OmegaConf.to_container(self.config.awac, resolve=True),
         }
@@ -164,20 +170,21 @@ class AWACCriticTrainer(TrainerUtils):
 
             self.optimizer.zero_grad()
             with self.accelerator.autocast():
-                critic_loss, critic_metrics = self.accelerator.unwrap_model(self.critic).td_loss(
+                critic, value_net = self._train_modules()
+                critic_loss, critic_metrics = critic.td_loss(
                     batch,
-                    self.accelerator.unwrap_model(self.critic_target),
+                    self.critic_target,
                     gamma=gamma,
                     action_horizon=horizon,
                 )
                 with torch.no_grad():
-                    q_behavior = self.accelerator.unwrap_model(self.critic).min_q(
+                    q_behavior = critic.min_q(
                         batch["image"],
                         batch["lang"],
                         batch["action"],
                         state=batch.get("state"),
                     ).squeeze(-1)
-                value_loss, value_metrics = self.accelerator.unwrap_model(self.value_net).expectile_loss(
+                value_loss, value_metrics = value_net.expectile_loss(
                     batch,
                     q_target=q_behavior,
                     tau=expectile_tau,
@@ -187,15 +194,13 @@ class AWACCriticTrainer(TrainerUtils):
             self.accelerator.backward(total_loss)
             if self.config.trainer.get("max_grad_norm"):
                 self.accelerator.clip_grad_norm_(
-                    list(self.critic.parameters()) + list(self.value_net.parameters()),
+                    self.model.parameters(),
                     self.config.trainer.max_grad_norm,
                 )
             self.optimizer.step()
             self.lr_scheduler.step()
 
-            unwrapped_critic = self.accelerator.unwrap_model(self.critic)
-            unwrapped_target = self.accelerator.unwrap_model(self.critic_target)
-            soft_update_target(unwrapped_target, unwrapped_critic, polyak)
+            soft_update_target(self.critic_target, self._train_modules()[0], polyak)
 
             self.completed_steps += 1
             progress.update(1)
@@ -215,7 +220,7 @@ class AWACCriticTrainer(TrainerUtils):
 def build_critic_modules(cfg, actor):
     awac_cfg = cfg.awac
     action_cfg = cfg.framework.action_model
-    critic = AWACQCritic(
+    critic_kwargs = dict(
         qwen_vl_interface=actor.qwen_vl_interface,
         action_dim=int(action_cfg.action_dim),
         state_dim=int(action_cfg.state_dim),
@@ -228,7 +233,9 @@ def build_critic_modules(cfg, actor):
         freeze_visual=awac_cfg.get("freeze_visual", True) not in ["False", False],
         dropout=float(awac_cfg.get("dropout", 0.1)),
     )
-    critic_target = copy.deepcopy(critic)
+    critic = AWACQCritic(**critic_kwargs)
+    critic_target = AWACQCritic(**critic_kwargs)
+    critic_target.load_state_dict(critic.state_dict())
     for param in critic_target.parameters():
         param.requires_grad = False
     value_net = AWACValueNetwork(critic=critic, hidden_dim=int(awac_cfg.get("value_hidden_dim", 256)))

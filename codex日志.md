@@ -787,3 +787,14 @@
 
 结果如何：
 已修改 `.gitignore` 并追加本轮记录到 `codex日志.md`。待提交推送后，远端会开始追踪 `codex日志.md`，但 `AGENTS.md` 仍保持本地忽略。
+
+## 2026-05-19 16:09
+
+问题是什么：
+用户要求先拉取 GitHub 最新代码，再按 Calvin AWAC critic 指南跑最新快速训练和 rollout 输出，用于后训练调试；要求 rollout 数据包含可视化 mp4。后续用户补充：跑通后可以多跑一些，让模型有一定效果；并贴出 AWAC critic 指南全文。
+
+解决思路：
+先 `git fetch` 并 fast-forward 合并 `origin/starVLA_dev`，确认仓库中没有 `examples/calvin/train_files/critic.md`，但已有 AWAC reward/critic/actor 脚本。使用本机 `starVLA_qwen35` 环境完成 Qwen3.5-0.8B OFT 1-step 快速训练验证训练入口，再用该 checkpoint 跑 1 条 CALVIN rollout，验证 LeRobot rollout writer、parquet/meta、sidecar analysis JSONL 和 mp4 都能生成。随后训练 100-step checkpoint，并用该 checkpoint 跑 3 条 rollout，生成 CALVIN debug mp4 和 LeRobot `image/wrist_image` 两路 mp4。对 rollout LeRobot 数据执行 `prepare_awac_rewards.py`，显式传入 `--success_column episode_success`，写入 `step_reward/reward/done`。最后用该 rollout 数据做 1-step AWAC critic smoke；过程中发现并修复 critic 代码对 Qwen3.5 的三个真实兼容问题：假设 `model.visual` 一定存在、value network 重复注册 critic 导致 DeepSpeed 多模型 prepare 失败、bf16 训练下 state/action/reward/done dtype 未对齐。
+
+结果如何：
+快速训练成功：`logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/checkpoints/qwen35_oft_rollout_debug_100step/checkpoints/steps_100_pytorch_model.pt`。3 条 rollout 成功落盘：`rollout_lerobot_debug_3seq` 下共有 3 个 parquet、1080 帧、9 个可读 mp4；视频验证显示 CALVIN debug mp4 为 200x200@30fps，LeRobot image 为 200x200@10fps，wrist_image 为 84x84@10fps。AWAC reward 预处理成功：3 个 episode 写入 `step_reward/reward/done`，最后 8 帧 `done=True`。AWAC critic 1-step smoke 成功保存 `logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/awac_critic_smoke_1step/checkpoints/steps_1_critic.pt`，checkpoint 可读且包含 `critic/critic_target/value_net/awac/steps`。修改文件：`starVLA/model/modules/critic/awac_q_critic.py`、`starVLA/model/modules/critic/awac_v_network.py`、`starVLA/training/train_awac_critic.py`、`codex日志.md`。验证：`py_compile` 通过；`pytest` 未跑，因为 `starVLA_qwen35` 环境没有 pytest；训练/rollout/预处理/critic smoke 均实际运行。注意：100-step 模型 rollout 的 3 个任务均失败，说明该 quick checkpoint 只能用于链路与后训练数据调试，不代表策略质量达标。
