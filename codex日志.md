@@ -809,3 +809,14 @@
 
 结果如何：
 已为现有 run 生成 `logs/log_20260519_1548_qwen35_oft_rollout_debug_100step/tensorboard/events.out.tfevents.*`。验证通过：`tensorboard --inspect --logdir logs/log_20260519_1548_qwen35_oft_rollout_debug_100step` 能看到 `action_dit_loss`、`learning_rate/action_model`、`eval/avg_seq_len`、`eval/task_success/*`、`rollout/total_frames` 等 scalar；EventAccumulator 反查显示 `action_dit_loss` 共 100 个 step，最后一步为 `0.4107098877`。代码验证通过：`py_compile`、两个 shell 脚本 `bash -n`、`git diff --check`。
+
+## 2026-05-19 17:04
+
+问题是什么：
+用户要求继续多跑一会儿，最好跑 10 分钟级别的数据，让 TensorBoard 曲线和 rollout/AWAC 后训练调试数据更可靠。此前 100-step OFT run 只能证明链路可通，训练曲线太短；用户还希望能看到完整训练曲线、critic 曲线和 mp4 可视化。
+
+解决思路：
+先尝试 QwenPI 0.8B 常规 800-step 训练，因本机 8GB RTX 4060 Laptop GPU 在 DeepSpeed optimizer 初始化阶段 OOM，改用 CPU offload 配置继续跑。PI 训练实际跑到 800/800，耗时约 11 分钟，但最后保存/收尾阶段进程被 SIGKILL，所以不伪报完整成功，只采用已成功落盘的 `steps_600_pytorch_model.pt` 做 rollout。随后用该 checkpoint 跑 3 条 CALVIN rollout，写出 LeRobot parquet、analysis JSONL、done/success/distance/joint/state/action 字段和 image/wrist_image mp4；再对 rollout 数据执行 AWAC reward 预处理。AWAC critic 首次训练暴露 rollout state 为 8 维而 actor/critic checkpoint 为 7 维的问题，因此修改 `starVLA/dataloader/awac_transition_dataset.py`，让 AWAC dataloader 显式读取 `framework.action_model.state_dim`，数据维度少于配置时报错，数据维度多于配置时只裁剪尾部维度并发出一次 warning，避免静默错配。
+
+结果如何：
+生成新的调试 run：`logs/log_20260519_1640_qwen35_pi_rollout_debug_800step_cpuoffload`。训练 TensorBoard 清洁导出在 `tensorboard_complete`，验证有 `action_dit_loss/learning_rate/timing` 各 800 个 step，eval/rollout scalar 也已写入；critic TensorBoard 在 `tensorboard_critic`，验证 `critic_loss/value_loss/q_mean/target_mean/v_mean/total_loss/learning_rate` 各 120 个 step。可视化 mp4 已生成并用 ffprobe 验证：`mp4_3seq/*.mp4`、`rollout_lerobot_debug_3seq/videos/chunk-000/image/*.mp4`、`rollout_lerobot_debug_3seq/videos/chunk-000/wrist_image/*.mp4`。rollout 数据为 3 episodes、1080 frames、6 个 LeRobot 视频；3 个任务首子任务均失败，说明 600-step 本地 PI checkpoint 只能用于链路/后训练调试，不代表策略效果达标。AWAC reward 预处理成功写入 `step_reward/reward/done`；AWAC critic 120-step 成功保存 `awac_critic_pi_120step_state7_trimmed/checkpoints/steps_120_critic.pt`。修改文件：`starVLA/dataloader/awac_transition_dataset.py`、`codex日志.md`。验证：`py_compile` 通过；PI 训练跑满 800 step 但最终保存被 SIGKILL；rollout/mp4/LeRobot 写盘、AWAC 预处理、AWAC critic 120-step、TensorBoard event 反查均完成。

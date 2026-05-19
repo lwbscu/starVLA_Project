@@ -17,6 +17,8 @@ from starVLA.dataloader.gr00t_lerobot.registry import DATASET_NAMED_MIXTURES
 from starVLA.dataloader.lerobot_datasets import make_LeRobotSingleDataset
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset
 
+_STATE_DIM_WARNINGS_ISSUED: set[tuple[str, int, int]] = set()
+
 
 def _scalar_reward(value: Any) -> float:
     if isinstance(value, (int, float, np.number)):
@@ -78,7 +80,34 @@ def read_transition_done(
     return float(next_index >= traj_len - 1)
 
 
-def _pack_observation(data: dict, dataset: LeRobotSingleDataset, include_state: bool) -> dict:
+def _align_state_dim(state: np.ndarray, target_dim: int | None, dataset_name: str) -> np.ndarray:
+    if target_dim is None or target_dim <= 0:
+        return state
+    current_dim = int(state.shape[-1])
+    if current_dim == target_dim:
+        return state
+    if current_dim < target_dim:
+        raise ValueError(
+            f"AWAC state dimension mismatch for {dataset_name}: "
+            f"data has {current_dim} dims but framework.action_model.state_dim={target_dim}."
+        )
+    warning_key = (dataset_name, current_dim, target_dim)
+    if warning_key not in _STATE_DIM_WARNINGS_ISSUED:
+        warnings.warn(
+            f"AWAC state dimension mismatch for {dataset_name}: "
+            f"data has {current_dim} dims, trimming trailing dims to configured state_dim={target_dim}.",
+            stacklevel=2,
+        )
+        _STATE_DIM_WARNINGS_ISSUED.add(warning_key)
+    return state[..., :target_dim]
+
+
+def _pack_observation(
+    data: dict,
+    dataset: LeRobotSingleDataset,
+    include_state: bool,
+    state_dim: int | None = None,
+) -> dict:
     step_images = []
     for video_key in dataset.modality_keys["video"]:
         image = data[video_key][0]
@@ -92,7 +121,8 @@ def _pack_observation(data: dict, dataset: LeRobotSingleDataset, include_state: 
     sample = {"action": action, "image": step_images, "lang": language}
     if include_state and "state" in dataset.modality_keys:
         state_parts = [data[state_key] for state_key in dataset.modality_keys["state"]]
-        sample["state"] = np.concatenate(state_parts, axis=1).astype(np.float32)
+        state = np.concatenate(state_parts, axis=1).astype(np.float32)
+        sample["state"] = _align_state_dim(state, state_dim, dataset.dataset_name)
     return sample
 
 
@@ -104,6 +134,7 @@ class AWACTransitionDataset(Dataset):
         base_dataset: LeRobotSingleDataset,
         action_horizon: int,
         include_state: bool = True,
+        state_dim: int | None = None,
         reward_column: str = "reward",
         done_column: str = "done",
         reward_is_chunk_return: bool = True,
@@ -111,6 +142,7 @@ class AWACTransitionDataset(Dataset):
         self.base_dataset = base_dataset
         self.action_horizon = int(action_horizon)
         self.include_state = include_state
+        self.state_dim = int(state_dim) if state_dim is not None else None
         self.reward_column = reward_column
         self.done_column = done_column
         self.reward_is_chunk_return = reward_is_chunk_return
@@ -143,8 +175,8 @@ class AWACTransitionDataset(Dataset):
         current = self.base_dataset.transforms(raw_current)
         nxt = self.base_dataset.transforms(raw_next)
 
-        sample = _pack_observation(current, self.base_dataset, self.include_state)
-        next_sample = _pack_observation(nxt, self.base_dataset, self.include_state)
+        sample = _pack_observation(current, self.base_dataset, self.include_state, self.state_dim)
+        next_sample = _pack_observation(nxt, self.base_dataset, self.include_state, self.state_dim)
 
         traj_df = self.base_dataset.get_trajectory_data(trajectory_id)
         if self.reward_column not in traj_df.columns and not self._reward_warning_issued:
@@ -213,7 +245,7 @@ class AWACTransitionMixtureDataset(Dataset):
         return self.datasets[dataset_idx][local_index]
 
 
-def get_awac_dataset(data_cfg, action_horizon: int) -> Dataset:
+def get_awac_dataset(data_cfg, action_horizon: int, state_dim: int | None = None) -> Dataset:
     data_root_dir = Path(data_cfg.data_root_dir)
     data_mix = data_cfg.data_mix
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
@@ -238,6 +270,7 @@ def get_awac_dataset(data_cfg, action_horizon: int) -> Dataset:
                 base_dataset=base,
                 action_horizon=action_horizon,
                 include_state=include_state,
+                state_dim=state_dim,
                 reward_column=reward_column,
                 done_column=done_column,
                 reward_is_chunk_return=reward_is_chunk_return,
@@ -253,7 +286,8 @@ def get_awac_dataset(data_cfg, action_horizon: int) -> Dataset:
 def build_awac_dataloader(cfg):
     data_cfg = cfg.datasets.awac_data
     action_horizon = int(cfg.framework.action_model.action_horizon)
-    dataset = get_awac_dataset(data_cfg, action_horizon=action_horizon)
+    state_dim = int(cfg.framework.action_model.state_dim) if cfg.framework.action_model.get("state_dim", None) else None
+    dataset = get_awac_dataset(data_cfg, action_horizon=action_horizon, state_dim=state_dim)
     return DataLoader(
         dataset,
         batch_size=data_cfg.per_device_batch_size,
