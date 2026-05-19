@@ -897,3 +897,58 @@
 
 结果如何：
 新增 `H200_批量测试命令行.md`。文档明确训练数据 `calvin_task_ABC_D` 与快速仿真 eval 数据 `task_D_D` 的区别，给出两套批量脚本的完整命令，并保留 `REQUIRE_MP4=1`、依赖检查、端口清理和 `SEND_STATE_TO_POLICY=1` 等关键安全项。验证执行 `git diff --check -- H200_批量测试命令行.md` 通过；本轮未实际在 H200 上运行 CALVIN eval。
+
+## 2026-05-19 19:31
+
+问题是什么：
+用户在 H200 服务器上按 `H200_批量测试命令行.md` 执行了环境初始化、数据路径检查和 CALVIN 依赖检查，询问这些检查结果是否正确。
+
+解决思路：
+根据用户贴出的终端输出逐项判断：`starVLA_qwen35` Python 路径和 transformers 版本正确，`calvin` Python 路径存在；训练数据 `calvin_task_ABC_D` 的 `meta/info.json`、`meta/modality.json`、`data/`、`videos/` 以及 eval 数据 `task_D_D/training/.hydra/merged_config.yaml` 均通过 `test` 检查；CALVIN 依赖检查打印了 `pybullet`、`cv2=4.11.0` 和 `imageio_ffmpeg` 路径，说明核心依赖可 import。指出一处粘贴串行风险：`export TOKENIZERS_PARALLELISM=falseADATA=1` 明显不是预期变量，应重新干净设置 OSMesa、GitPython、CALVIN offline/no EGL、albumentations 和 tokenizers 相关环境变量。
+
+结果如何：
+本轮未修改代码。结论是用户当前 H200 的 Python、数据路径和核心 CALVIN 依赖检查基本通过，可以进入 eval 前置阶段；但在真正运行 eval 脚本前，需要重新执行干净的公共环境变量块，尤其是 `PYOPENGL_PLATFORM=osmesa`、`MUJOCO_GL=osmesa`、`CALVIN_FORCE_NO_EGL=1` 和 `TOKENIZERS_PARALLELISM=false`，避免后续仿真渲染或环境初始化失败。本轮不提交、不推送。
+
+## 2026-05-19 19:35
+
+问题是什么：
+用户在 H200 上运行单模型 eval 时得到 `Eval dataset is invalid: .../task_D_D`。随后诊断显示脚本已是新版且包含 `training/.hydra` 判断，但 `ls .../task_D_D/training/.hydra/merged_config.yaml` 报 `No such file or directory`。
+
+解决思路：
+指出此前多行 `test -f ...` 没有输出不能证明成功，因为 `test` 失败默认也不打印内容，必须用 `&& echo OK || echo FAIL` 或查看 `$?`。当前证据说明问题不是脚本旧版，而是 H200 上设置的 `H200_CALVIN_EVAL_DATASET_PATH` 目录并不包含 CALVIN 环境配置。下一步应在共享目录和本地 `calvin/dataset` 下查找真实存在的 `.hydra/merged_config.yaml`，再把 `H200_CALVIN_EVAL_DATASET_PATH` 指向其父级任务目录或 split 目录。
+
+结果如何：
+本轮未修改代码。给出下一步应在 H200 执行的 `find`/路径验证命令，并要求找到真实 `.hydra/merged_config.yaml` 后再运行 eval，避免通过关闭检查绕过 CALVIN 环境缺失问题。本轮不提交、不推送。
+
+## 2026-05-19 19:37
+
+问题是什么：
+用户在 H200 上执行 `find ... -path "*/.hydra/merged_config.yaml"` 后，确认共享盘 `/inspire/qb-ilm2/.../public/inspire_shared/calvin_abc_d` 下没有可用 `.hydra`，但项目内存在 `calvin/dataset/calvin_debug_dataset/validation/.hydra/merged_config.yaml` 和 `calvin/dataset/calvin_debug_dataset/training/.hydra/merged_config.yaml`。
+
+解决思路：
+根据真实路径调整 eval 数据集选择：当前 H200 可用的 CALVIN 仿真环境目录应显式设为 `/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project/calvin/dataset/calvin_debug_dataset`。该目录有 validation split，因此比之前误设的共享盘 `task_D_D` 更适合做当前 smoke/visual eval。继续保持高标准：先用 `test -f ... && echo OK || echo FAIL` 验证，再跑单模型 1 条序列。
+
+结果如何：
+本轮未修改代码。给用户提供了应设置的 `H200_CALVIN_EVAL_DATASET_PATH` 和单模型 eval 命令。当前结论：共享盘的 `task_D_D` 不可用作 eval 环境；项目内 `calvin_debug_dataset` 可用。本轮不提交、不推送。
+
+## 2026-05-19 19:54
+
+问题是什么：
+用户分别在 GPU 无网络服务器和 CPU 有网络服务器运行单模型 PI 9B eval。GPU 服务器能启动 policy server、加载 9B checkpoint、连接 CALVIN debug dataset 并生成 `results.json`/mp4，但 1 条序列首个子任务失败，success rate 为 0。CPU 服务器在加载 9B checkpoint 后 `run_policy_server_debug.sh` 报 `Killed`，policy server 端口未就绪。
+
+解决思路：
+区分两类结果：GPU 服务器链路已跑通，`opening handshake failed` 是当前端口探活的裸 TCP 连接触发 websocket 日志，不影响后续真实连接；任务失败是模型表现/评测集/输入形式问题，需要看 mp4 和进一步扩大序列。CPU 服务器的 `Killed` 没有 Python traceback，属于系统级 SIGKILL，最常见是 9B policy server 占用内存或显存过大，被 OOM killer 杀掉；CPU 有网络不等于适合运行 9B eval。建议所有 4B/9B eval 放 GPU 节点跑，CPU 节点只用于代码、日志、结果分析或最多尝试 0.8B。
+
+结果如何：
+本轮未修改代码。给用户的结论是：继续使用 GPU 无网络服务器做正式批量 eval；先保留 `calvin_debug_dataset` 路径，单模型 1 条序列已经证明环境、policy server、mp4 输出链路可用；CPU 有网络服务器不应用来跑 9B policy server。本轮不提交、不推送。
+
+## 2026-05-19 19:56
+
+问题是什么：
+用户要求现在推送，并特别提醒更新 `H200_批量测试命令行.md`。此前现场验证显示共享盘 `task_D_D` 不可用作 eval 环境，项目内 `calvin_debug_dataset` 可用；GPU 无网络服务器可以跑通单模型 PI 9B eval，CPU 有网络服务器跑 9B 会被系统 `Killed`。
+
+解决思路：
+更新 `H200_批量测试命令行.md`：将默认 eval 数据集改为 `/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project/calvin/dataset/calvin_debug_dataset`；补充共享盘 `task_D_D` 当前无 `.hydra`、不要作为 eval 环境；补充 GPU/CPU 运行位置选择，明确无网络 GPU 节点可跑 eval，CPU 有网络节点只适合代码同步/日志分析，不适合 4B/9B policy server；把四路线批量测试的初始建议改为每模型 1 条序列先验证链路，再扩大到 5 条或全量。
+
+结果如何：
+修改 `H200_批量测试命令行.md` 和 `codex日志.md`，准备提交并推送。验证项：`git diff --check -- H200_批量测试命令行.md` 已通过；后续提交只包含测试命令文档和本日志，不引入无关改动。
