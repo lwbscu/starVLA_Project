@@ -54,6 +54,8 @@ datasets:
     per_device_batch_size: 4
     num_workers: 4
     reward_column: reward
+    done_column: done
+    reward_is_chunk_return: true
     video_backend: torchvision_av
 
 awac:

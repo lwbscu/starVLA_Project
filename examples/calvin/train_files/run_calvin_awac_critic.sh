@@ -14,6 +14,11 @@ output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
 
+# Optional: run once before first AWAC training if parquet has no reward/done columns yet.
+# python examples/calvin/scripts/prepare_awac_rewards.py \
+#   --dataset_root "${calvin_data_root}/<your_dataset_folder_name>" \
+#   --action_horizon 8 --gamma 0.996
+
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 8 \

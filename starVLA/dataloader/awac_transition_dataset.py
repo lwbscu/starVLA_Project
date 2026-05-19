@@ -28,7 +28,7 @@ def _scalar_reward(value: Any) -> float:
 
 
 def read_chunk_reward(traj_df, start_index: int, horizon: int, reward_column: str = "reward") -> float:
-    """Sum per-step rewards over [start_index, start_index + horizon)."""
+    """Sum per-step rewards over [start_index, start_index + horizon) (legacy)."""
     if reward_column not in traj_df.columns:
         return 0.0
     total = 0.0
@@ -40,6 +40,42 @@ def read_chunk_reward(traj_df, start_index: int, horizon: int, reward_column: st
         value = traj_df[reward_column].iloc[idx]
         total += _scalar_reward(value)
     return total
+
+
+def read_transition_reward(
+    traj_df,
+    start_index: int,
+    horizon: int,
+    reward_column: str = "reward",
+    reward_is_chunk_return: bool = True,
+) -> float:
+    """
+    Read transition reward at ``start_index``.
+
+    After ``prepare_awac_rewards.py``, ``reward`` stores discounted chunk return
+    R_chunk(t) and should **not** be summed again over the horizon.
+    """
+    if reward_column not in traj_df.columns:
+        return 0.0
+    if reward_is_chunk_return:
+        return _scalar_reward(traj_df[reward_column].iloc[start_index])
+    return read_chunk_reward(traj_df, start_index, horizon, reward_column)
+
+
+def read_transition_done(
+    traj_df,
+    base_index: int,
+    next_index: int,
+    traj_len: int,
+    done_column: str = "done",
+) -> float:
+    """Read ``done`` from parquet (last-H-frame flags) or fall back to index heuristic."""
+    if done_column in traj_df.columns:
+        value = traj_df[done_column].iloc[base_index]
+        if isinstance(value, (bool, np.bool_)):
+            return float(value)
+        return float(_scalar_reward(value) > 0.5)
+    return float(next_index >= traj_len - 1)
 
 
 def _pack_observation(data: dict, dataset: LeRobotSingleDataset, include_state: bool) -> dict:
@@ -69,11 +105,15 @@ class AWACTransitionDataset(Dataset):
         action_horizon: int,
         include_state: bool = True,
         reward_column: str = "reward",
+        done_column: str = "done",
+        reward_is_chunk_return: bool = True,
     ):
         self.base_dataset = base_dataset
         self.action_horizon = int(action_horizon)
         self.include_state = include_state
         self.reward_column = reward_column
+        self.done_column = done_column
+        self.reward_is_chunk_return = reward_is_chunk_return
         self._reward_warning_issued = False
 
         self.valid_steps: list[tuple[int, int]] = []
@@ -117,8 +157,20 @@ class AWACTransitionDataset(Dataset):
 
         traj_idx = self.base_dataset.get_trajectory_index(trajectory_id)
         traj_len = int(self.base_dataset.trajectory_lengths[traj_idx])
-        reward = read_chunk_reward(traj_df, base_index, horizon, self.reward_column)
-        done = float(next_index >= traj_len - 1)
+        reward = read_transition_reward(
+            traj_df,
+            base_index,
+            horizon,
+            reward_column=self.reward_column,
+            reward_is_chunk_return=self.reward_is_chunk_return,
+        )
+        done = read_transition_done(
+            traj_df,
+            base_index,
+            next_index,
+            traj_len,
+            done_column=self.done_column,
+        )
 
         transition = {
             "image": sample["image"],
@@ -167,6 +219,8 @@ def get_awac_dataset(data_cfg, action_horizon: int) -> Dataset:
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
     include_state = data_cfg.get("include_state", True) not in ["False", False]
     reward_column = data_cfg.get("reward_column", "reward")
+    done_column = data_cfg.get("done_column", "done")
+    reward_is_chunk_return = data_cfg.get("reward_is_chunk_return", True) not in ["False", False]
 
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     transition_sets: list[AWACTransitionDataset] = []
@@ -185,6 +239,8 @@ def get_awac_dataset(data_cfg, action_horizon: int) -> Dataset:
                 action_horizon=action_horizon,
                 include_state=include_state,
                 reward_column=reward_column,
+                done_column=done_column,
+                reward_is_chunk_return=reward_is_chunk_return,
             )
         )
         weights.append(float(d_weight))
