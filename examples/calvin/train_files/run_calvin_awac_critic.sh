@@ -28,6 +28,8 @@ bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/ste
 run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_critic}
 num_processes=${num_processes:-8}
+STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-python}
+ACCELERATE_LAUNCH=("${STAR_VLA_PYTHON}" -m accelerate.commands.launch)
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
@@ -45,7 +47,7 @@ cp "$0" "${output_dir}/"
 #   compute_rewards_on_the_fly=true assume_success_if_missing=true bash ...
 # This does not mutate parquet; reward/done are computed in the dataloader.
 
-accelerate launch \
+"${ACCELERATE_LAUNCH[@]}" \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${num_processes}" \
   starVLA/training/train_awac_critic.py \
