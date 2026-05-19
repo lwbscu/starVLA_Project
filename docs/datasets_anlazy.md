@@ -399,11 +399,31 @@ mkdir -p "${DATASET_SCAN_OUT}"
   "${DATASET_SCAN_ROOT}" \
   /inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_d_d \
   /inspire/qb-ilm2/project/26summer-camp-10/public/four/calvin/dataset/calvin_debug_dataset \
+  --progress \
+  --max-depth 6 \
+  --child-max-depth 4 \
+  --max-count-files 200000 \
+  --max-count-files-per-child 50000 \
   --sample-parquet \
   --json-out "${DATASET_SCAN_OUT}/dataset_layout.json" \
   > "${DATASET_SCAN_OUT}/dataset_layout.md"
 
 sed -n '1,220p' "${DATASET_SCAN_OUT}/dataset_layout.md"
+```
+
+如果这个快速扫描能返回直接子目录，但没有找到 LeRobot root，就对可疑子目录逐个深扫，例如：
+
+```bash
+"${STAR_VLA_PYTHON}" examples/calvin/scripts/inspect_dataset_layout.py \
+  /inspire/qb-ilm2/project/26summer-camp-10/public/three/dataset/<子目录名> \
+  --progress \
+  --max-depth 10 \
+  --child-max-depth 6 \
+  --max-count-files 500000 \
+  --max-count-files-per-child 100000 \
+  --sample-parquet \
+  --json-out "${DATASET_SCAN_OUT}/dataset_layout_<子目录名>.json" \
+  > "${DATASET_SCAN_OUT}/dataset_layout_<子目录名>.md"
 ```
 
 这个报告会列出：

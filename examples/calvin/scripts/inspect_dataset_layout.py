@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -58,13 +59,31 @@ def safe_read_json(path: Path) -> dict[str, Any] | list[Any] | None:
         return None
 
 
-def count_files(root: Path, max_files: int | None = None) -> tuple[Counter[str], int, int]:
+def log_progress(args: argparse.Namespace, message: str) -> None:
+    if args.progress:
+        print(f"[inspect_dataset_layout] {message}", file=sys.stderr, flush=True)
+
+
+def iter_files(root: Path, max_depth: int | None = None):
+    root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        if max_depth is not None:
+            try:
+                depth = len(current.relative_to(root).parts)
+            except ValueError:
+                depth = 0
+            if depth >= max_depth:
+                dirnames[:] = []
+        for filename in filenames:
+            yield current / filename
+
+
+def count_files(root: Path, max_files: int | None = None, max_depth: int | None = None) -> tuple[Counter[str], int, int]:
     counts: Counter[str] = Counter()
     total_files = 0
     total_bytes = 0
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
+    for path in iter_files(root, max_depth=max_depth):
         total_files += 1
         if max_files is not None and total_files > max_files:
             break
@@ -95,18 +114,22 @@ def direct_children(root: Path, limit: int) -> list[dict[str, Any]]:
     return rows
 
 
-def discover_lerobot_roots(root: Path) -> list[Path]:
+def discover_lerobot_roots(root: Path, max_depth: int | None = None) -> list[Path]:
     roots: set[Path] = set()
-    for info in root.rglob("meta/info.json"):
+    for info in iter_files(root, max_depth=max_depth):
+        if info.name != "info.json" or info.parent.name != "meta":
+            continue
         dataset_root = info.parents[1]
         if (dataset_root / "data").is_dir():
             roots.add(dataset_root)
     return sorted(roots)
 
 
-def discover_calvin_eval_roots(root: Path) -> list[dict[str, str]]:
+def discover_calvin_eval_roots(root: Path, max_depth: int | None = None) -> list[dict[str, str]]:
     rows: dict[Path, dict[str, str]] = {}
-    for cfg in root.rglob(".hydra/merged_config.yaml"):
+    for cfg in iter_files(root, max_depth=max_depth):
+        if cfg.name != "merged_config.yaml" or cfg.parent.name != ".hydra":
+            continue
         split_dir = cfg.parents[1]
         if split_dir.name in {"training", "validation"}:
             eval_root = split_dir.parent
@@ -119,6 +142,21 @@ def discover_calvin_eval_roots(root: Path) -> list[dict[str, str]]:
         splits.add(split)
         rows[eval_root]["splits"] = ",".join(sorted(splits))
     return [rows[p] for p in sorted(rows)]
+
+
+def collect_suffix_files(root: Path, suffix: str, max_files: int | None = None) -> tuple[list[Path], bool]:
+    matches: list[Path] = []
+    truncated = False
+    if not root.is_dir():
+        return matches, truncated
+    for path in iter_files(root):
+        if path.suffix.lower() != suffix:
+            continue
+        if max_files is not None and len(matches) >= max_files:
+            truncated = True
+            break
+        matches.append(path)
+    return sorted(matches), truncated
 
 
 def sample_parquet_columns(path: Path) -> dict[str, Any]:
@@ -149,15 +187,15 @@ def sample_parquet_columns(path: Path) -> dict[str, Any]:
             }
 
 
-def inspect_lerobot_root(dataset_root: Path, sample_parquet: bool) -> dict[str, Any]:
+def inspect_lerobot_root(dataset_root: Path, sample_parquet: bool, max_files: int | None) -> dict[str, Any]:
     meta = dataset_root / "meta"
     info = safe_read_json(meta / "info.json")
     modality = safe_read_json(meta / "modality.json")
     embodiment = safe_read_json(meta / "embodiment.json")
     data_dir = dataset_root / "data"
     videos_dir = dataset_root / "videos"
-    parquet_files = sorted(data_dir.rglob("*.parquet")) if data_dir.is_dir() else []
-    video_files = sorted(videos_dir.rglob("*.mp4")) if videos_dir.is_dir() else []
+    parquet_files, parquet_truncated = collect_suffix_files(data_dir, ".parquet", max_files=max_files)
+    video_files, video_truncated = collect_suffix_files(videos_dir, ".mp4", max_files=max_files)
 
     row: dict[str, Any] = {
         "path": str(dataset_root),
@@ -166,7 +204,9 @@ def inspect_lerobot_root(dataset_root: Path, sample_parquet: bool) -> dict[str, 
         "has_modality": (meta / "modality.json").is_file(),
         "has_embodiment": (meta / "embodiment.json").is_file(),
         "parquet_count": len(parquet_files),
+        "parquet_count_truncated": parquet_truncated,
         "mp4_count": len(video_files),
+        "mp4_count_truncated": video_truncated,
         "meta_files": sorted(p.name for p in meta.glob("*")) if meta.is_dir() else [],
     }
     if isinstance(info, dict):
@@ -202,17 +242,27 @@ def scan_root(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     if not root.is_dir():
         return {"root": str(root), "exists": False}
 
-    ext_counts, total_files, total_bytes = count_files(root, args.max_count_files)
-    lerobot_roots = discover_lerobot_roots(root)
-    calvin_roots = discover_calvin_eval_roots(root)
+    log_progress(args, f"scan root start: {root}")
+    log_progress(args, f"count files: {root}")
+    ext_counts, total_files, total_bytes = count_files(root, args.max_count_files, max_depth=args.max_depth)
+    log_progress(args, f"discover LeRobot roots: {root}")
+    lerobot_roots = discover_lerobot_roots(root, max_depth=args.max_depth)
+    log_progress(args, f"discover CALVIN eval roots: {root}")
+    calvin_roots = discover_calvin_eval_roots(root, max_depth=args.max_depth)
 
     top_ext_dirs: dict[str, Counter[str]] = defaultdict(Counter)
     for child in root.iterdir():
         if not child.is_dir():
             continue
-        counts, _total, _bytes = count_files(child, args.max_count_files_per_child)
+        log_progress(args, f"count top-level child: {child}")
+        counts, _total, _bytes = count_files(
+            child,
+            args.max_count_files_per_child,
+            max_depth=args.child_max_depth,
+        )
         top_ext_dirs[child.name].update(counts)
 
+    log_progress(args, f"inspect {len(lerobot_roots)} LeRobot root(s): {root}")
     return {
         "root": str(root),
         "exists": True,
@@ -225,7 +275,10 @@ def scan_root(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             for key, counter in sorted(top_ext_dirs.items())
             if counter
         },
-        "lerobot_roots": [inspect_lerobot_root(path, args.sample_parquet) for path in lerobot_roots],
+        "lerobot_roots": [
+            inspect_lerobot_root(path, args.sample_parquet, args.max_lerobot_files)
+            for path in lerobot_roots
+        ],
         "calvin_eval_roots": calvin_roots,
     }
 
@@ -268,8 +321,10 @@ def print_markdown(report: dict[str, Any]) -> None:
             for item in root_report["lerobot_roots"]:
                 print(f"### `{item['path']}`")
                 print()
-                print(f"- parquet_count: {item['parquet_count']}")
-                print(f"- mp4_count: {item['mp4_count']}")
+                parquet_suffix = " (truncated)" if item.get("parquet_count_truncated") else ""
+                mp4_suffix = " (truncated)" if item.get("mp4_count_truncated") else ""
+                print(f"- parquet_count: {item['parquet_count']}{parquet_suffix}")
+                print(f"- mp4_count: {item['mp4_count']}{mp4_suffix}")
                 print(f"- meta_files: `{', '.join(item['meta_files'])}`")
                 if item.get("info"):
                     print(f"- info: `{json.dumps(item['info'], ensure_ascii=False)}`")
@@ -297,8 +352,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable JSON report.")
     parser.add_argument("--sample-parquet", action="store_true", help="Read one parquet per LeRobot root to show columns.")
     parser.add_argument("--children-limit", type=int, default=80)
-    parser.add_argument("--max-count-files", type=int, default=None, help="Cap recursive file counting per root.")
+    parser.add_argument("--max-depth", type=int, default=None, help="Cap recursive discovery/counting depth per root.")
+    parser.add_argument("--child-max-depth", type=int, default=None, help="Cap recursive counting depth for each top-level child.")
+    parser.add_argument("--max-count-files", type=int, default=200000, help="Cap recursive file counting per root.")
     parser.add_argument("--max-count-files-per-child", type=int, default=20000)
+    parser.add_argument("--max-lerobot-files", type=int, default=200000, help="Cap parquet/mp4 counting per discovered LeRobot root.")
+    parser.add_argument("--progress", action="store_true", help="Print progress to stderr while stdout is redirected.")
     return parser.parse_args()
 
 
