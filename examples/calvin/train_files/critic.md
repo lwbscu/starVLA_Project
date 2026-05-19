@@ -169,7 +169,7 @@ w = clip(exp(A / λ), w_max)
 | Actor | `steps_*_pytorch_model.pt` | 与 BC 相同，仅 **可训练 actor** 权重 |
 
 - 旧 ckpt 若含 `value_net` 键，Actor 加载会 **warning 并忽略**；应用新 Critic 重训。
-- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`，H200 下 `d_name=calvin_task_ABC_D`。
+- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200` / `calvin_hlx_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`。H200 原始数据 `calvin_abc_d_h200 → calvin_task_ABC_D`，增强数据 `calvin_hlx_h200 → hlx`。
 
 ### 2.6 可以安全改的配置（不破坏契约时）
 
@@ -314,10 +314,12 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 | `CUDA_VISIBLE_DEVICES` | GPU |
 | `base_vlm` | Qwen VLM 路径（与 BC 一致） |
 | `calvin_data_root` | 数据集父目录 |
+| `calvin_dataset_name` | 数据集子目录名，仅用于预处理注释/检查，如 `calvin_task_ABC_D` 或 `hlx` |
 | `data_mix` | `data_registry` 里注册的 mix 名 |
+| `include_state` / `state_dim` | H200 LeRobot PI-State 使用 `true` / `8` |
 | `bc_checkpoint` | **BC actor** 权重（用于加载 VLM、复制 visual 到 Critic） |
 | `run_root_dir` / `run_id` | 日志与 checkpoint 目录 |
-| `--num_processes` | GPU 数量 |
+| `num_processes` | GPU 数量 |
 
 ### 4.4 YAML / CLI 里常改的参数（`starvla_awac_calvin.yaml`）
 
@@ -362,7 +364,7 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `action_horizon` | 8 | **H**，与预处理一致 |
-| `action_dim` / `state_dim` | 7 | Calvin 关节+gripper |
+| `action_dim` / `state_dim` | 7 / 7 | YAML 默认；H200 LeRobot PI-State 必须用脚本环境变量或 CLI 覆盖 `state_dim=8` |
 
 CLI 覆盖示例：
 
@@ -416,7 +418,7 @@ accelerate launch \
 | `run_id` | 建议与 critic 阶段区分，如 `awac_calvin_actor` |
 | `--trainer.freeze_modules` | 默认 `qwen_vl_interface`，只训 action head |
 
-其余 `calvin_data_root`、`data_mix`、`base_vlm` 与 Critic 阶段一致。
+其余 `calvin_data_root`、`data_mix`、`include_state`、`state_dim`、`base_vlm` 与 Critic 阶段一致。
 
 ### 5.4 YAML / CLI 里常改的参数
 

@@ -10,12 +10,14 @@ export NO_ALBUMENTATIONS_UPDATE=${NO_ALBUMENTATIONS_UPDATE:-1}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-base_vlm=./playground/Pretrained_models/Qwen3.5-9B
-config_yaml=./examples/calvin/train_files/starvla_awac_calvin.yaml
-calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
-data_mix=calvin_abc_d_h200
-bc_checkpoint=./results/Checkpoints/your_bc_run/checkpoints/steps_30000_pytorch_model.pt
-critic_checkpoint=./logs/awac_calvin_critic/checkpoints/steps_50000_critic.pt
+base_vlm=${base_vlm:-./playground/Pretrained_models/Qwen3.5-9B}
+config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin.yaml}
+calvin_data_root=${calvin_data_root:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}
+data_mix=${data_mix:-calvin_abc_d_h200}
+include_state=${include_state:-true}
+state_dim=${state_dim:-8}
+bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/steps_30000_pytorch_model.pt}
+critic_checkpoint=${critic_checkpoint:-./logs/awac_calvin_critic/checkpoints/steps_50000_critic.pt}
 run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_actor}
 num_processes=${num_processes:-8}
@@ -31,8 +33,10 @@ accelerate launch \
   --config_yaml "${config_yaml}" \
   --framework.name QwenPI_AWAC \
   --framework.qwenvl.base_vlm "${base_vlm}" \
+  --framework.action_model.state_dim "${state_dim}" \
   --datasets.awac_data.data_root_dir "${calvin_data_root}" \
   --datasets.awac_data.data_mix "${data_mix}" \
+  --datasets.awac_data.include_state "${include_state}" \
   --trainer.pretrained_checkpoint "${bc_checkpoint}" \
   --trainer.awac_critic_checkpoint "${critic_checkpoint}" \
   --trainer.actor_max_train_steps 30000 \
