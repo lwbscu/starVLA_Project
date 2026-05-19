@@ -29,7 +29,7 @@ export SERVER_DIR=${SERVER_DIR:-server1_pi_state}
 export TRAIN_VARIANT=${TRAIN_VARIANT:-proprio}
 
 export MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-30000}
-export SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
+export SAVE_INTERVAL=${SAVE_INTERVAL:-10000}
 export EVAL_INTERVAL=${EVAL_INTERVAL:-1000000}
 export CHECKPOINT_KEEP_LATEST=${CHECKPOINT_KEEP_LATEST:-1}
 export CHECKPOINT_KEEP_STEPS=${CHECKPOINT_KEEP_STEPS:-10000,20000,30000}
@@ -50,6 +50,7 @@ export PI_NUM_INFERENCE_TIMESTEPS=${PI_NUM_INFERENCE_TIMESTEPS:-4}
 export PI_REPEATED_DIFFUSION_STEPS=${PI_REPEATED_DIFFUSION_STEPS:-2}
 export PI_NUM_TARGET_VISION_TOKENS=${PI_NUM_TARGET_VISION_TOKENS:-32}
 export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-8}
+export H200_PI_STATE_MODELS=${H200_PI_STATE_MODELS:-"qwen35_0p8b qwen35_4b qwen35_9b"}
 
 export BATCH_NAME=${BATCH_NAME:-$(date +"%Y%m%d")_h200_server1_pi_state_30k_v1}
 export BATCH_ROOT=${BATCH_ROOT:-"${PROJECT_ROOT}/logs/${BATCH_NAME}"}
@@ -113,6 +114,44 @@ PY
 
 check_state_dim
 
+check_sample_parquet_contract() {
+  "${STAR_VLA_PYTHON}" - "${CALVIN_DATASET_DIR}" "${STATE_DIM}" "${ACTION_DIM}" "${ACTION_HORIZON}" <<'PY'
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+root = Path(sys.argv[1])
+state_dim = int(sys.argv[2])
+action_dim = int(sys.argv[3])
+horizon = int(sys.argv[4])
+
+parquets = sorted((root / "data").glob("**/*.parquet"))
+if not parquets:
+    raise SystemExit(f"no parquet files under {root / 'data'}")
+
+sample = parquets[0]
+df = pd.read_parquet(sample)
+missing = [name for name in ("state", "actions") if name not in df.columns]
+if missing:
+    raise SystemExit(f"sample parquet missing required PI-State columns {missing}: {sample}")
+if len(df) < 2 * horizon:
+    raise SystemExit(f"sample parquet too short for AWAC t+2H check: len={len(df)}, H={horizon}, file={sample}")
+
+state = np.asarray(df["state"].iloc[0]).reshape(-1)
+action = np.asarray(df["actions"].iloc[0]).reshape(-1)
+if state.shape[0] != state_dim:
+    raise SystemExit(f"state dim mismatch: expected {state_dim}, got {state.shape[0]}, file={sample}")
+if action.shape[0] != action_dim:
+    raise SystemExit(f"action dim mismatch: expected {action_dim}, got {action.shape[0]}, file={sample}")
+
+print(f"sample_parquet_contract=ok file={sample} state_dim={state_dim} action_dim={action_dim} H={horizon}")
+PY
+}
+
+check_sample_parquet_contract
+
 declare -a H200_BATCH_PIDS=()
 declare -a H200_BATCH_NAMES=()
 declare -a H200_BATCH_LOG_DIRS=()
@@ -147,9 +186,12 @@ launch_qwen_size() {
     echo "num_processes=${num_processes}"
     echo "main_process_port=${main_process_port}"
     echo "train_variant=${TRAIN_VARIANT}"
+    echo "selected_models=${H200_PI_STATE_MODELS}"
     echo "include_state=${INCLUDE_STATE}"
     echo "state_dim=${STATE_DIM}"
     echo "pi_state_dim=${PI_STATE_DIM}"
+    echo "action_dim=${ACTION_DIM}"
+    echo "action_horizon=${ACTION_HORIZON}"
     echo "max_train_steps=${MAX_TRAIN_STEPS}"
     echo "save_interval=${SAVE_INTERVAL}"
     echo "checkpoint_keep_latest=${CHECKPOINT_KEEP_LATEST}"
@@ -206,9 +248,25 @@ launch_qwen_size() {
   H200_BATCH_LOG_DIRS+=("${log_dir}")
 }
 
-launch_qwen_size qwen35_0p8b "${QWEN35_0P8B}" 0 1 33100
-launch_qwen_size qwen35_4b "${QWEN35_4B}" 1,2 2 33110
-launch_qwen_size qwen35_9b "${QWEN35_9B}" 3,4,5,6,7 5 33120
+should_launch_model() {
+  local model_tag=$1
+  [[ " ${H200_PI_STATE_MODELS} " == *" ${model_tag} "* ]]
+}
+
+if should_launch_model qwen35_0p8b; then
+  launch_qwen_size qwen35_0p8b "${QWEN35_0P8B}" 0 1 33100
+fi
+if should_launch_model qwen35_4b; then
+  launch_qwen_size qwen35_4b "${QWEN35_4B}" 1,2 2 33110
+fi
+if should_launch_model qwen35_9b; then
+  launch_qwen_size qwen35_9b "${QWEN35_9B}" 3,4,5,6,7 5 33120
+fi
+
+if (( ${#H200_BATCH_PIDS[@]} == 0 )); then
+  echo "No PI-State models selected. Set H200_PI_STATE_MODELS to one or more of: qwen35_0p8b qwen35_4b qwen35_9b" >&2
+  exit 2
+fi
 
 status=0
 for idx in "${!H200_BATCH_PIDS[@]}"; do

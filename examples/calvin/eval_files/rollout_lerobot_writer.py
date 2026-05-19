@@ -6,10 +6,10 @@ The core parquet columns follow the existing CALVIN LeRobot dataset:
 ``image``, ``wrist_image``, ``state``, ``actions``, ``timestamp``,
 ``frame_index``, ``episode_index``, ``index`` and ``task_index``.
 
-Rollout diagnostics such as ``done``, ``episode_success``, target distances and
-joint positions are stored as extra columns plus a sidecar JSONL file. The
-training dataloader ignores those extra columns, while analysis code can consume
-them directly.
+Rollout diagnostics such as ``done``, ``success``, ``episode_success``, target
+distances and joint positions are stored as extra columns plus a sidecar JSONL
+file. The training dataloader ignores those extra columns, while analysis code
+can consume them directly.
 """
 
 from __future__ import annotations
@@ -385,6 +385,7 @@ class RolloutLeRobotWriter:
             "robot_joint_pos": {"dtype": "float32", "shape": [7], "names": [f"joint_{i}" for i in range(7)]},
             "done": {"dtype": "bool", "shape": [1], "names": None},
             "env_done": {"dtype": "bool", "shape": [1], "names": None},
+            "success": {"dtype": "bool", "shape": [1], "names": None},
             "episode_success": {"dtype": "bool", "shape": [1], "names": None},
             "distance_to_target": {"dtype": "float32", "shape": [1], "names": None},
             "distance_to_robot_target": {"dtype": "float32", "shape": [1], "names": None},
@@ -476,6 +477,7 @@ class RolloutLeRobotWriter:
             "robot_joint_pos": calvin_robot_obs_to_joint_pos(robot_obs).tolist(),
             "done": bool(done),
             "env_done": bool(env_done),
+            "success": bool(success),
             "episode_success": bool(success),
             "distance_to_target": np.float32(distance_info["distance_to_target"]),
             "distance_to_robot_target": np.float32(distance_info["distance_to_robot_target"]),
@@ -515,14 +517,21 @@ class RolloutLeRobotWriter:
         except ImportError as exc:
             raise ImportError("RolloutLeRobotWriter requires pandas with parquet support in the eval environment.") from exc
 
+        terminal_frame_index = len(episode.rows) - 1
         for row in episode.rows:
             row["episode_success"] = bool(success)
-            if row["frame_index"] == len(episode.rows) - 1:
+            if row["frame_index"] == terminal_frame_index:
+                row["success"] = bool(success)
                 row["done"] = True
+            else:
+                row["success"] = bool(row.get("success", False))
         for row in episode.analysis_rows:
             row["episode_success"] = bool(success)
-            if row["frame_index"] == len(episode.rows) - 1:
+            if row["frame_index"] == terminal_frame_index:
+                row["success"] = bool(success)
                 row["done"] = True
+            else:
+                row["success"] = bool(row.get("step_success", False))
 
         episode_chunk = episode.episode_index // self.chunks_size
         chunk_dir = self.data_dir / f"chunk-{episode_chunk:03d}"
@@ -579,6 +588,7 @@ class RolloutLeRobotWriter:
             "robot_joint_pos": _numeric_stats(np.stack([row["robot_joint_pos"] for row in rows])),
             "done": _numeric_stats(np.asarray([row["done"] for row in rows], dtype=np.int64)),
             "env_done": _numeric_stats(np.asarray([row["env_done"] for row in rows], dtype=np.int64)),
+            "success": _numeric_stats(np.asarray([row["success"] for row in rows], dtype=np.int64)),
             "episode_success": _numeric_stats(np.asarray([row["episode_success"] for row in rows], dtype=np.int64)),
             "distance_to_target": _numeric_stats(np.asarray([row["distance_to_target"] for row in rows], dtype=np.float32)),
             "distance_to_robot_target": _numeric_stats(

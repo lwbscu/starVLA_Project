@@ -274,7 +274,15 @@ def check_registry(report: Report, data_mix: str, dataset_name: str) -> None:
         )
 
 
-def check_bc_runs(report: Report, batch_root: Path, jobs: list[str], expected_step: int, state_dim: int) -> None:
+def check_bc_runs(
+    report: Report,
+    batch_root: Path,
+    jobs: list[str],
+    expected_step: int,
+    state_dim: int,
+    action_dim: int,
+    action_horizon: int,
+) -> None:
     section = "bc_run"
     if not batch_root.is_dir():
         report.add(section, "FAIL", "batch root exists", f"missing batch root: {batch_root}")
@@ -297,6 +305,8 @@ def check_bc_runs(report: Report, batch_root: Path, jobs: list[str], expected_st
             include_state = boolish(env.get("include_state"))
             env_state_dim = env.get("state_dim")
             env_pi_state_dim = env.get("pi_state_dim")
+            env_action_dim = env.get("action_dim")
+            env_action_horizon = env.get("action_horizon")
             route = env.get("route")
             route_label = env.get("route_label")
             if route == "p4_pi" and route_label == "pi_state":
@@ -315,6 +325,22 @@ def check_bc_runs(report: Report, batch_root: Path, jobs: list[str], expected_st
                     "FAIL",
                     f"{label} state dim",
                     f"expected state_dim/pi_state_dim={state_dim}, got {env_state_dim}/{env_pi_state_dim}",
+                )
+            if env_action_dim is None and env_action_horizon is None:
+                report.add(section, "WARN", f"{label} action contract", "env log lacks action_dim/action_horizon")
+            elif env_action_dim == str(action_dim) and env_action_horizon == str(action_horizon):
+                report.add(
+                    section,
+                    "PASS",
+                    f"{label} action contract",
+                    f"action_dim={action_dim}, action_horizon={action_horizon}",
+                )
+            else:
+                report.add(
+                    section,
+                    "FAIL",
+                    f"{label} action contract",
+                    f"expected action_dim/action_horizon={action_dim}/{action_horizon}, got {env_action_dim}/{env_action_horizon}",
                 )
 
         ckpt, latest_step, all_ckpts = find_latest_checkpoint(run_dir)
@@ -548,7 +574,124 @@ def check_dataset(
         report.add(section, "FAIL", "valid AWAC transitions", f"no sampled t+2H transitions, H={horizon}")
 
 
-def check_rollout(report: Report, rollout_root: Path | None, require_rollout: bool) -> None:
+def check_rollout_dataset_columns(
+    report: Report,
+    rollout_dataset: Path,
+    state_dim: int,
+    action_dim: int,
+    horizon: int,
+    gamma: float,
+    sample_limit: int,
+    hard_fail: bool,
+) -> None:
+    section = "rollout"
+    status_bad = "FAIL" if hard_fail else "WARN"
+    try:
+        import pandas as pd  # noqa: F401
+    except ImportError as exc:
+        report.add(section, status_bad, "rollout parquet import", f"pandas is required: {exc}")
+        return
+
+    info_path = rollout_dataset / "meta/info.json"
+    modality_path = rollout_dataset / "meta/modality.json"
+    if not info_path.is_file() or not modality_path.is_file():
+        report.add(
+            section,
+            status_bad,
+            f"{rollout_dataset} metadata",
+            "missing meta/info.json or meta/modality.json",
+        )
+        return
+
+    parquets = sorted((rollout_dataset / "data").glob("**/*.parquet"))
+    if not parquets:
+        report.add(section, status_bad, f"{rollout_dataset} parquet", "no parquet files under data/")
+        return
+
+    sampled = parquets[: max(1, sample_limit)]
+    missing_required: list[str] = []
+    state_dim_bad: list[str] = []
+    action_dim_bad: list[str] = []
+    reward_bad: list[str] = []
+    success_terminal = 0
+    valid_transitions = 0
+    required_columns = {"state", "actions", "success", "done", "episode_success"}
+
+    for parquet in sampled:
+        try:
+            df = pd.read_parquet(parquet)
+        except Exception as exc:  # noqa: BLE001
+            report.add(section, status_bad, "read rollout parquet", f"{parquet}: {exc}")
+            continue
+
+        missing = sorted(required_columns.difference(df.columns))
+        if missing:
+            missing_required.append(f"{parquet}: missing {missing}")
+            continue
+
+        valid_transitions += max(0, len(df) - 2 * horizon + 1)
+        state_actual_dim = sample_dimension(df, "state")
+        action_actual_dim = sample_dimension(df, "actions")
+        if state_actual_dim != state_dim:
+            state_dim_bad.append(f"{parquet}: state dim={state_actual_dim}")
+        if action_actual_dim != action_dim:
+            action_dim_bad.append(f"{parquet}: actions dim={action_actual_dim}")
+        if len(df) and scalar_bool(df["success"].iloc[-1]):
+            success_terminal += 1
+
+        if {"step_reward", "reward"}.issubset(df.columns):
+            try:
+                rewards = np.asarray([numeric_scalar(x) for x in df["reward"].to_list()], dtype=float)
+                step_rewards = np.asarray([numeric_scalar(x) for x in df["step_reward"].to_list()], dtype=float)
+                done = df["done"].map(scalar_bool).to_numpy(dtype=bool)
+                expected_done = np.zeros(len(df), dtype=bool)
+                expected_done[max(0, len(df) - horizon) :] = True
+                if not np.array_equal(done, expected_done):
+                    reward_bad.append(f"{parquet}: done is not last-H AWAC done")
+                if len(step_rewards):
+                    max_offset = min(horizon - 1, len(step_rewards) - 1)
+                    expected_first = sum((gamma**k) * step_rewards[k] for k in range(max_offset + 1))
+                    if not math.isclose(float(rewards[0]), float(expected_first), rel_tol=1e-4, abs_tol=1e-4):
+                        reward_bad.append(
+                            f"{parquet}: reward[0]={rewards[0]:.6g} != recomputed chunk {expected_first:.6g}"
+                        )
+            except Exception as exc:  # noqa: BLE001
+                reward_bad.append(f"{parquet}: {exc}")
+
+    if missing_required or state_dim_bad or action_dim_bad or reward_bad:
+        report.add(
+            section,
+            status_bad,
+            f"{rollout_dataset} parquet schema",
+            (
+                f"missing_required={missing_required[:3]}, "
+                f"state_dim_bad={state_dim_bad[:3]}, "
+                f"action_dim_bad={action_dim_bad[:3]}, "
+                f"reward_bad={reward_bad[:3]}"
+            ),
+        )
+    else:
+        report.add(
+            section,
+            "PASS",
+            f"{rollout_dataset} parquet schema",
+            (
+                f"sampled={len(sampled)}, terminal_successes={success_terminal}/{len(sampled)}, "
+                f"valid_transitions={valid_transitions}, H={horizon}"
+            ),
+        )
+
+
+def check_rollout(
+    report: Report,
+    rollout_root: Path | None,
+    require_rollout: bool,
+    state_dim: int,
+    action_dim: int,
+    horizon: int,
+    gamma: float,
+    sample_limit: int,
+) -> None:
     section = "rollout"
     if rollout_root is None:
         status = "FAIL" if require_rollout else "WARN"
@@ -594,6 +737,19 @@ def check_rollout(report: Report, rollout_root: Path | None, require_rollout: bo
     else:
         report.add(section, "WARN", "rollout mp4", "no mp4 files found")
 
+    rollout_datasets = sorted({path.parents[1] for path in rollout_infos})
+    for rollout_dataset in rollout_datasets[: max(1, sample_limit)]:
+        check_rollout_dataset_columns(
+            report,
+            rollout_dataset=rollout_dataset,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            horizon=horizon,
+            gamma=gamma,
+            sample_limit=min(sample_limit, 16),
+            hard_fail=require_rollout,
+        )
+
 
 def render_markdown(args: argparse.Namespace, report: Report) -> str:
     lines = [
@@ -633,6 +789,7 @@ def render_markdown(args: argparse.Namespace, report: Report) -> str:
                 "- 有 `FAIL` 就不要直接开 AWAC critic/actor；先按失败项补齐。",
                 "- `success` 缺失时，先补标签再跑 `prepare_awac_rewards.py`，不要用默认全成功绕过。",
                 "- `step_reward/reward/done` 缺失时，说明还没完成 AWAC 预处理，critic 训练会读到错误/零奖励。",
+                "- rollout parquet 若缺 `success`，不能直接用默认 `prepare_awac_rewards.py`；需要补标准成功列或显式传 `--success_column`。",
                 "",
             ]
         )
@@ -649,7 +806,15 @@ def main() -> int:
     rollout_root = Path(args.rollout_root) if args.rollout_root else None
 
     check_registry(report, args.data_mix, args.dataset_name)
-    check_bc_runs(report, batch_root, jobs, args.expected_step, args.state_dim)
+    check_bc_runs(
+        report,
+        batch_root,
+        jobs,
+        args.expected_step,
+        args.state_dim,
+        args.action_dim,
+        args.action_horizon,
+    )
     check_dataset(
         report,
         dataset_root,
@@ -660,7 +825,16 @@ def main() -> int:
         sample_limit=args.sample_parquets,
         require_preprocessed=args.require_preprocessed,
     )
-    check_rollout(report, rollout_root, args.require_rollout)
+    check_rollout(
+        report,
+        rollout_root,
+        args.require_rollout,
+        state_dim=args.state_dim,
+        action_dim=args.action_dim,
+        horizon=args.action_horizon,
+        gamma=args.gamma,
+        sample_limit=args.sample_parquets,
+    )
 
     markdown = render_markdown(args, report)
     print(markdown)

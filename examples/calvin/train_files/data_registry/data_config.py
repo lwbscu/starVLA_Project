@@ -10,4 +10,7 @@ DATASET_NAMED_MIXTURES = {
     "calvin_hlx_h200": [
         ("hlx/calvin_task_ABC_D", 1.0, "libero_franka"),
     ],
+    "calvin_rollout_h200": [
+        ("rollout_lerobot", 1.0, "libero_franka"),
+    ],
 }
