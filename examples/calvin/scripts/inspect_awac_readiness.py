@@ -56,6 +56,16 @@ def parse_args() -> argparse.Namespace:
         help="Relative model job path under batch root. Can be repeated.",
     )
     parser.add_argument("--expected-step", type=int, default=30000, help="Expected BC checkpoint step.")
+    parser.add_argument(
+        "--job-expected-step",
+        action="append",
+        default=[],
+        metavar="JOB=STEP",
+        help=(
+            "Override expected checkpoint step for one job. JOB may be the exact relative job path "
+            "(for example server1_pi_state/qwen35_9b), its __ label, or the model name."
+        ),
+    )
     parser.add_argument("--action-horizon", type=int, default=8, help="AWAC action chunk horizon H.")
     parser.add_argument("--gamma", type=float, default=0.996, help="AWAC reward discount gamma.")
     parser.add_argument("--state-dim", type=int, default=8, help="Required PI-State dimension.")
@@ -79,6 +89,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--json-out", default=None, help="Optional path for a JSON report.")
     return parser.parse_args()
+
+
+def parse_job_expected_steps(values: list[str]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for raw_value in values:
+        if "=" not in raw_value:
+            raise ValueError(f"--job-expected-step must be JOB=STEP, got {raw_value!r}")
+        key, raw_step = raw_value.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--job-expected-step has empty JOB in {raw_value!r}")
+        try:
+            step = int(raw_step)
+        except ValueError as exc:
+            raise ValueError(f"--job-expected-step STEP must be an integer, got {raw_step!r}") from exc
+        if step <= 0:
+            raise ValueError(f"--job-expected-step STEP must be positive, got {step}")
+        mapping[key] = step
+    return mapping
+
+
+def expected_step_for_job(job: str, global_expected_step: int, job_expected_steps: dict[str, int]) -> int:
+    label = job.replace("/", "__")
+    model_name = job.split("/")[-1]
+    for key in (job, label, model_name):
+        if key in job_expected_steps:
+            return job_expected_steps[key]
+    return global_expected_step
 
 
 def load_dataset_mixtures() -> dict[str, Any]:
@@ -279,6 +317,7 @@ def check_bc_runs(
     batch_root: Path,
     jobs: list[str],
     expected_step: int,
+    job_expected_steps: dict[str, int],
     state_dim: int,
     action_dim: int,
     action_horizon: int,
@@ -293,6 +332,7 @@ def check_bc_runs(
         job_root = batch_root / job
         run_dir = find_run_dir(job_root)
         label = job.replace("/", "__")
+        required_step = expected_step_for_job(job, expected_step, job_expected_steps)
         if run_dir is None:
             report.add(section, "FAIL", f"{label} run dir", f"cannot find run directory under {job_root}")
             continue
@@ -346,12 +386,12 @@ def check_bc_runs(
         ckpt, latest_step, all_ckpts = find_latest_checkpoint(run_dir)
         if ckpt is None or latest_step is None:
             report.add(section, "FAIL", f"{label} checkpoint", f"no steps_*_pytorch_model.pt under {run_dir}")
-        elif latest_step >= expected_step:
+        elif latest_step >= required_step:
             report.add(
                 section,
                 "PASS",
                 f"{label} checkpoint",
-                f"latest step {latest_step} >= expected {expected_step}",
+                f"latest step {latest_step} >= expected {required_step}",
                 checkpoint=ckpt,
                 checkpoint_steps=[step for step, _ in all_ckpts],
             )
@@ -360,7 +400,7 @@ def check_bc_runs(
                 section,
                 "FAIL",
                 f"{label} checkpoint",
-                f"latest step {latest_step} < expected {expected_step}",
+                f"latest step {latest_step} < expected {required_step}",
                 checkpoint=ckpt,
                 checkpoint_steps=[step for step, _ in all_ckpts],
             )
@@ -721,6 +761,32 @@ def check_rollout(
             "rollout LeRobot",
             f"info_files={len(rollout_infos)}, parquets={len(rollout_parquets)}",
         )
+        try:
+            import pandas as pd
+
+            sample = pd.read_parquet(rollout_parquets[0])
+            columns = set(sample.columns)
+            required_columns = {"state", "actions", "done"}
+            success_columns = {"success", "episode_success"}
+            missing = sorted(required_columns.difference(columns))
+            if missing:
+                report.add(section, "FAIL" if require_rollout else "WARN", "rollout columns", f"missing {missing}")
+            elif not columns.intersection(success_columns):
+                report.add(
+                    section,
+                    "FAIL" if require_rollout else "WARN",
+                    "rollout success columns",
+                    "missing success/episode_success in sampled rollout parquet",
+                )
+            else:
+                report.add(
+                    section,
+                    "PASS",
+                    "rollout columns",
+                    f"state/actions/done and success marker present in {rollout_parquets[0]}",
+                )
+        except Exception as exc:  # noqa: BLE001
+            report.add(section, "FAIL" if require_rollout else "WARN", "rollout parquet read", str(exc))
     else:
         report.add(
             section,
@@ -761,6 +827,7 @@ def render_markdown(args: argparse.Namespace, report: Report) -> str:
         f"- dataset_root: `{Path(args.data_root) / args.dataset_name}`",
         f"- data_mix: `{args.data_mix}`",
         f"- expected_step: `{args.expected_step}`",
+        f"- job_expected_steps: `{parse_job_expected_steps(args.job_expected_step)}`",
         f"- H/gamma: `{args.action_horizon}` / `{args.gamma}`",
         f"- require_preprocessed: `{args.require_preprocessed}`",
         f"- require_rollout: `{args.require_rollout}`",
@@ -804,6 +871,11 @@ def main() -> int:
     dataset_root = Path(args.data_root) / args.dataset_name
     jobs = args.job if args.job else list(DEFAULT_JOBS)
     rollout_root = Path(args.rollout_root) if args.rollout_root else None
+    try:
+        job_expected_steps = parse_job_expected_steps(args.job_expected_step)
+    except ValueError as exc:
+        print(f"Argument error: {exc}", file=sys.stderr)
+        return 2
 
     check_registry(report, args.data_mix, args.dataset_name)
     check_bc_runs(
@@ -811,6 +883,7 @@ def main() -> int:
         batch_root,
         jobs,
         args.expected_step,
+        job_expected_steps,
         args.state_dim,
         args.action_dim,
         args.action_horizon,
@@ -848,6 +921,7 @@ def main() -> int:
                 "dataset_root": str(dataset_root),
                 "data_mix": args.data_mix,
                 "expected_step": args.expected_step,
+                "job_expected_steps": job_expected_steps,
                 "action_horizon": args.action_horizon,
                 "gamma": args.gamma,
                 "state_dim": args.state_dim,
