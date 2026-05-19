@@ -273,6 +273,11 @@ AGENTS.md
 !docs/model_zoo.md
 !docs/starVLA_guideline.md
 !docs/WM4A.md
+
+# Local agent coordination logs must stay local even if earlier whitelist rules match.
+AGENTS.md
+codex日志.md
+claude日志.md
 !docs/study/
 !docs/study/*.md
 
