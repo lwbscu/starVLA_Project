@@ -14,6 +14,7 @@ Conventions:
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Tuple
@@ -261,7 +262,79 @@ class VLATrainer(TrainerUtils):
                 self.config.save_accessed_config(output_dir / "config.yaml", use_original_values=False)
                 logger.info("✅ Configuration files saved")
 
+            self._prune_checkpoints(save_format=save_format)
+
         self.accelerator.wait_for_everyone()
+
+    def _get_checkpoint_keep_latest(self) -> int:
+        raw_value = getattr(self.config.trainer, "checkpoint_keep_latest", 0)
+        try:
+            keep_latest = int(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"trainer.checkpoint_keep_latest must be an integer, got {raw_value!r}") from exc
+        if keep_latest < 0:
+            raise ValueError(f"trainer.checkpoint_keep_latest must be >= 0, got {keep_latest}")
+        return keep_latest
+
+    def _get_checkpoint_keep_steps(self) -> set[int]:
+        raw_value = getattr(self.config.trainer, "checkpoint_keep_steps", None)
+        if raw_value in (None, "", []):
+            return set()
+
+        if isinstance(raw_value, int):
+            raw_items = [raw_value]
+        elif isinstance(raw_value, str):
+            raw_items = [item for item in re.split(r"[\s,]+", raw_value.strip()) if item]
+        else:
+            raw_items = list(raw_value)
+
+        keep_steps = set()
+        for item in raw_items:
+            try:
+                step = int(item)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"trainer.checkpoint_keep_steps must contain integers, got {item!r}") from exc
+            if step < 1:
+                raise ValueError(f"trainer.checkpoint_keep_steps must contain positive steps, got {step}")
+            keep_steps.add(step)
+        return keep_steps
+
+    def _list_checkpoint_files(self, save_format: str) -> list[tuple[int, Path]]:
+        if save_format == "pt":
+            pattern = re.compile(r"^steps_(\d+)_pytorch_model\.pt$")
+        elif save_format == "safetensors":
+            pattern = re.compile(r"^steps_(\d+)_model\.safetensors$")
+        else:
+            return []
+
+        checkpoint_files = []
+        for path in Path(self.checkpoint_dir).iterdir():
+            if not path.is_file():
+                continue
+            match = pattern.match(path.name)
+            if match:
+                checkpoint_files.append((int(match.group(1)), path))
+        checkpoint_files.sort(key=lambda item: item[0])
+        return checkpoint_files
+
+    def _prune_checkpoints(self, save_format: str) -> None:
+        keep_latest = self._get_checkpoint_keep_latest()
+        keep_steps = self._get_checkpoint_keep_steps()
+        if keep_latest == 0 and not keep_steps:
+            return
+
+        checkpoint_files = self._list_checkpoint_files(save_format=save_format)
+        if not checkpoint_files:
+            return
+
+        latest_steps = {step for step, _ in checkpoint_files[-keep_latest:]} if keep_latest > 0 else set()
+        protected_steps = keep_steps | latest_steps
+
+        for step, path in checkpoint_files:
+            if step in protected_steps:
+                continue
+            path.unlink()
+            logger.info(f"Pruned checkpoint at step {step}: {path}")
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
