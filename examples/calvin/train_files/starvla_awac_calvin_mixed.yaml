@@ -87,10 +87,10 @@ awac:
 trainer:
   pretrained_checkpoint: null
   awac_critic_checkpoint: null
-  critic_max_train_steps: 30000
+  critic_max_train_steps: 10000
   actor_max_train_steps: 30000
   num_warmup_steps: 1000
-  save_interval: 10000
+  save_interval: 5000
   logging_frequency: 50
   use_tensorboard: true
   tensorboard_log_dir: null

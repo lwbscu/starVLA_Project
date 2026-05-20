@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -77,12 +79,33 @@ def merge_rollout_shards(
     global_frames = 0
     task_to_index: dict[str, int] = {}
     merged_episodes = 0
+    total_to_merge = sum(len(_load_jsonl(s / "meta" / "episodes.jsonl")) for s in shard_roots)
+    merge_t0 = time.time()
+    print(
+        f"[merge] start: shards={len(shard_roots)} episodes≈{total_to_merge} dst={dst}",
+        flush=True,
+    )
 
-    for shard_root in shard_roots:
+    for shard_i, shard_root in enumerate(shard_roots):
         shard_data = shard_root / "data"
         episodes = _load_jsonl(shard_root / "meta" / "episodes.jsonl")
         episode_stats = _load_jsonl(shard_root / "meta" / "episodes_stats.jsonl")
         stats_by_ep = {int(row["episode_index"]): row for row in episode_stats}
+        analysis_by_ep: dict[int, list[dict]] = defaultdict(list)
+        analysis_src = shard_root / "rollout_analysis" / "rollout_steps.jsonl"
+        if analysis_src.exists():
+            with analysis_src.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = json.loads(line)
+                    analysis_by_ep[int(row["episode_index"])].append(row)
+        print(
+            f"[merge] shard {shard_i + 1}/{len(shard_roots)}: {shard_root.name} "
+            f"episodes={len(episodes)}",
+            flush=True,
+        )
 
         for ep in episodes:
             old_idx = int(ep["episode_index"])
@@ -123,21 +146,23 @@ def merge_rollout_shards(
                 stat_row["episode_index"] = new_idx
                 _append_jsonl(meta_dst / "episodes_stats.jsonl", stat_row)
 
-            analysis_src = shard_root / "rollout_analysis" / "rollout_steps.jsonl"
-            if analysis_src.exists():
-                with analysis_src.open("r", encoding="utf-8") as handle:
-                    for line in handle:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        row = json.loads(line)
-                        if int(row.get("episode_index", old_idx)) == old_idx:
-                            row["episode_index"] = new_idx
-                            _append_jsonl(dst / "rollout_analysis" / "rollout_steps.jsonl", row)
+            for row in analysis_by_ep.get(old_idx, []):
+                row = dict(row)
+                row["episode_index"] = new_idx
+                _append_jsonl(dst / "rollout_analysis" / "rollout_steps.jsonl", row)
 
             global_index += 1
             merged_episodes += 1
             global_frames += int(ep.get("length", len(df)))
+            if merged_episodes == 1 or merged_episodes % 50 == 0 or merged_episodes == total_to_merge:
+                elapsed = time.time() - merge_t0
+                rate = merged_episodes / max(elapsed, 1e-6)
+                print(
+                    f"[merge] progress {merged_episodes}/{total_to_merge} "
+                    f"({100.0 * merged_episodes / max(total_to_merge, 1):.1f}%) "
+                    f"elapsed={elapsed:.0f}s ~{rate:.1f} ep/s",
+                    flush=True,
+                )
 
     total_chunks = (max(global_index - 1, 0) // chunks_size) + (1 if global_index else 0)
     info_path = dst / "meta" / "info.json"
@@ -154,6 +179,11 @@ def merge_rollout_shards(
         }
     )
     info_path.write_text(json.dumps(info, indent=4), encoding="utf-8")
+    print(
+        f"[merge] done: episodes={global_index} frames={global_frames} "
+        f"elapsed={time.time() - merge_t0:.0f}s",
+        flush=True,
+    )
 
     return {
         "status": "merged",

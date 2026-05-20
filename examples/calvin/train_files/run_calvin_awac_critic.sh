@@ -22,8 +22,8 @@ balance_datasets=${balance_datasets:-}
 if [[ "${data_mix}" == "calvin_awac_mixed_h200" ]]; then
   config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin_mixed.yaml}
   balance_datasets=${balance_datasets:-true}
-  critic_max_train_steps=${critic_max_train_steps:-30000}
-  save_interval=${save_interval:-10000}
+  critic_max_train_steps=${critic_max_train_steps:-10000}
+  save_interval=${save_interval:-5000}
   per_device_batch_size=${per_device_batch_size:-32}
 else
   config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin.yaml}
@@ -42,9 +42,38 @@ bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/ste
 run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_critic}
 save_interval=${save_interval:-5000}
-num_processes=${num_processes:-8}
+
+# Match num_processes to visible GPUs (avoid silent world_size=1 when 8 GPUs are requested).
+if [[ -n "${num_processes:-}" ]]; then
+  :
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  IFS=',' read -ra _AWAC_GPU_IDS <<< "${CUDA_VISIBLE_DEVICES}"
+  num_processes=${#_AWAC_GPU_IDS[@]}
+else
+  num_processes=8
+fi
+
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-python}
 ACCELERATE_LAUNCH=("${STAR_VLA_PYTHON}" -m accelerate.commands.launch)
+
+_visible_gpus="$("${STAR_VLA_PYTHON}" - <<'PY'
+import os
+import torch
+cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+if cuda_visible.strip():
+    print(len([x for x in cuda_visible.split(",") if x.strip() != ""]))
+else:
+    print(torch.cuda.device_count())
+PY
+)"
+echo "[awac-critic] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>} visible_gpus=${_visible_gpus} num_processes=${num_processes}"
+if [[ "${num_processes}" -gt "${_visible_gpus}" ]]; then
+  echo "[awac-critic] ERROR: num_processes=${num_processes} > visible_gpus=${_visible_gpus}" >&2
+  exit 1
+fi
+if [[ "${num_processes}" -lt 2 ]]; then
+  echo "[awac-critic] WARNING: num_processes=${num_processes}; training will run single-GPU (world_size=1)." >&2
+fi
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
@@ -65,6 +94,8 @@ cp "$0" "${output_dir}/"
 "${ACCELERATE_LAUNCH[@]}" \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${num_processes}" \
+  --multi_gpu \
+  --mixed_precision bf16 \
   starVLA/training/train_awac_critic.py \
   --config_yaml "${config_yaml}" \
   --framework.name "${Framework_name}" \
