@@ -88,7 +88,7 @@ balance_datasets=${balance_datasets:-}
 if [[ "${data_mix}" == "calvin_awac_mixed_h200" ]]; then
   config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin_mixed.yaml}
   balance_datasets=${balance_datasets:-true}
-  critic_max_train_steps=${critic_max_train_steps:-2000}
+  critic_max_train_steps=${critic_max_train_steps:-10000}
   save_interval=${save_interval:-1000}
   per_device_batch_size=${per_device_batch_size:-32}
 else

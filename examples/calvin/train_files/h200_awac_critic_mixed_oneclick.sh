@@ -83,11 +83,11 @@ export include_state=true
 export state_dim=8
 export compute_rewards_on_the_fly=true
 export assume_success_if_missing=false
-export critic_max_train_steps="${critic_max_train_steps:-2000}"
+export critic_max_train_steps="${critic_max_train_steps:-10000}"
 export save_interval="${save_interval:-1000}"
 export per_device_batch_size="${per_device_batch_size:-32}"
 export run_root_dir="${run_root_dir:-${PROJECT_ROOT}/logs/20260520_awac_pi_state_mixed}"
-export run_id="${run_id:-awac_critic_mixed_8gpu_2k}"
+export run_id="${run_id:-awac_critic_mixed_8gpu_10k}"
 export TB_PORT="${TB_PORT:-6006}"
 
 TB_LOGDIR="${run_root_dir}/${run_id}/tensorboard"
