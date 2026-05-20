@@ -106,9 +106,56 @@ bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/ste
 critic_checkpoint=${critic_checkpoint:-}
 run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_actor}
+main_process_port=${main_process_port:-${MAIN_PROCESS_PORT:-}}
+
+LORA_R=${LORA_R:-16}
+LORA_ALPHA=${LORA_ALPHA:-32}
+LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+LORA_ENABLED=${LORA_ENABLED:-false}
+LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-}
+LORA_TARGET_INCLUDE_PREFIXES=${LORA_TARGET_INCLUDE_PREFIXES:-}
+LORA_TARGET_EXCLUDE_PREFIXES=${LORA_TARGET_EXCLUDE_PREFIXES:-}
+LORA_FAIL_IF_NO_TARGET_MODULES=${LORA_FAIL_IF_NO_TARGET_MODULES:-true}
 
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-python}
 ACCELERATE_LAUNCH=("${STAR_VLA_PYTHON}" -m accelerate.commands.launch)
+PORT_ARGS=()
+if [[ -n "${main_process_port}" ]]; then
+  if ! [[ "${main_process_port}" =~ ^[0-9]+$ ]] || (( main_process_port < 1 || main_process_port > 65535 )); then
+    echo "[awac-actor] ERROR: main_process_port must be an integer in [1, 65535], got: ${main_process_port}" >&2
+    exit 2
+  fi
+  PORT_ARGS=(--main_process_port "${main_process_port}")
+fi
+
+case "${LORA_ENABLED}" in
+  true|false) ;;
+  *) echo "[awac-actor] ERROR: LORA_ENABLED must be true or false, got: ${LORA_ENABLED}" >&2; exit 2 ;;
+esac
+case "${LORA_FAIL_IF_NO_TARGET_MODULES}" in
+  true|false) ;;
+  *) echo "[awac-actor] ERROR: LORA_FAIL_IF_NO_TARGET_MODULES must be true or false, got: ${LORA_FAIL_IF_NO_TARGET_MODULES}" >&2; exit 2 ;;
+esac
+
+LORA_ARGS=()
+if [[ "${LORA_ENABLED}" == "true" ]]; then
+  LORA_ARGS+=(
+    --trainer.lora.enabled true
+    --trainer.lora.r "${LORA_R}"
+    --trainer.lora.alpha "${LORA_ALPHA}"
+    --trainer.lora.dropout "${LORA_DROPOUT}"
+    --trainer.lora.fail_if_no_target_modules "${LORA_FAIL_IF_NO_TARGET_MODULES}"
+  )
+  if [[ -n "${LORA_TARGET_MODULES}" ]]; then
+    LORA_ARGS+=(--trainer.lora.target_modules "${LORA_TARGET_MODULES}")
+  fi
+  if [[ -n "${LORA_TARGET_INCLUDE_PREFIXES}" ]]; then
+    LORA_ARGS+=(--trainer.lora.target_include_prefixes "${LORA_TARGET_INCLUDE_PREFIXES}")
+  fi
+  if [[ -n "${LORA_TARGET_EXCLUDE_PREFIXES}" ]]; then
+    LORA_ARGS+=(--trainer.lora.target_exclude_prefixes "${LORA_TARGET_EXCLUDE_PREFIXES}")
+  fi
+fi
 
 if [[ -z "${critic_checkpoint}" || ! -f "${critic_checkpoint}" ]]; then
   echo "[awac-actor] ERROR: critic_checkpoint must point to an existing steps_*_critic.pt file." >&2
@@ -131,6 +178,13 @@ echo "[awac-actor] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[awac-actor] visible_gpus(env)=${_VISIBLE_FROM_ENV} visible_gpus(torch)=${_TORCH_VISIBLE} num_processes=${num_processes}"
 echo "[awac-actor] bc_checkpoint=${bc_checkpoint}"
 echo "[awac-actor] critic_checkpoint=${critic_checkpoint}"
+echo "[awac-actor] main_process_port=${main_process_port:-<accelerate-default>}"
+echo "[awac-actor] LORA_ENABLED=${LORA_ENABLED}"
+if [[ "${LORA_ENABLED}" == "true" ]]; then
+  echo "[awac-actor] LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-<auto>}"
+  echo "[awac-actor] LORA_TARGET_INCLUDE_PREFIXES=${LORA_TARGET_INCLUDE_PREFIXES:-<none>}"
+  echo "[awac-actor] LORA_TARGET_EXCLUDE_PREFIXES=${LORA_TARGET_EXCLUDE_PREFIXES:-<none>}"
+fi
 echo "[awac-actor] freeze_modules=qwen_vl_interface (action head only)"
 
 if [[ "${num_processes}" -lt 1 ]]; then
@@ -149,6 +203,7 @@ cp "$0" "${output_dir}/"
 "${ACCELERATE_LAUNCH[@]}" \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${num_processes}" \
+  "${PORT_ARGS[@]}" \
   starVLA/training/train_awac_actor.py \
   --config_yaml "${config_yaml}" \
   --framework.name QwenPI_AWAC \
@@ -171,6 +226,7 @@ cp "$0" "${output_dir}/"
   --trainer.use_tensorboard true \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
+  "${LORA_ARGS[@]}" \
   ${per_device_batch_size:+--datasets.awac_data.per_device_batch_size "${per_device_batch_size}"} \
   ${balance_datasets:+--datasets.awac_data.balance_datasets "${balance_datasets}"} \
   ${rollout_eval_root:+--datasets.awac_data.dataset_roots.calvin_task_ABC_D "${calvin_data_root}"} \

@@ -21,6 +21,7 @@ from transformers import get_scheduler
 from starVLA.dataloader.awac_transition_dataset import build_awac_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
+from starVLA.model.lora_utils import apply_lora_if_enabled
 from starVLA.model.modules.critic import AWACQCritic, resolve_qwen_visual_module, soft_update_target
 from starVLA.training.awac_train_utils import assert_module_frozen, freeze_module
 from starVLA.training.trainer_utils.config_tracker import wrap_config
@@ -273,6 +274,7 @@ def main(cfg):
     setup_directories(cfg)
 
     actor = build_framework(cfg)
+    actor = apply_lora_if_enabled(actor, cfg, sanitize_freeze_modules=True)
     pretrained = getattr(cfg.trainer, "pretrained_checkpoint", None)
     if pretrained:
         TrainerUtils.load_pretrained_backbones(actor, pretrained)
