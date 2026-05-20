@@ -124,7 +124,9 @@ def compute_awac_weights(actor_pi, critic, batch, awac_cfg) -> tuple[torch.Tenso
     Critic stays frozen (no grad).
     """
     critic.eval()
-    with torch.inference_mode():
+    # Use no_grad (not inference_mode): inference_mode tensors cannot participate in
+    # (loss * weights).backward() even after detach().
+    with torch.no_grad():
         action_pi = predict_action_tensor(actor_pi, batch)
         q_pi = critic.min_q(
             batch["image"],
@@ -141,8 +143,7 @@ def compute_awac_weights(actor_pi, critic, batch, awac_cfg) -> tuple[torch.Tenso
         adv = q_pi - q_data
         weights = torch.exp(adv / float(awac_cfg.awac_lambda))
         weights = torch.clamp(weights, max=float(awac_cfg.awac_weight_max))
-        # Detach: weights are constants for actor loss; inference_mode tensors cannot backprop.
-        weights = weights.detach()
+    weights = weights.detach().clone()
     metrics = {
         "awac_adv_mean": float(adv.detach().mean().cpu()),
         "q_pi_mean": float(q_pi.detach().mean().cpu()),

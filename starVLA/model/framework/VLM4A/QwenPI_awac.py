@@ -84,9 +84,14 @@ class Qwen_PI_AWAC(Qwen_PI):
 
             loss_per_sample = self._flow_matching_loss_per_sample(vl_embs_list, actions_target, state_tensor)
             if awac_weights is not None:
-                weights = awac_weights.detach().to(loss_per_sample.device, dtype=loss_per_sample.dtype)
+                weights = (
+                    awac_weights.detach()
+                    .clone()
+                    .to(device=loss_per_sample.device, dtype=loss_per_sample.dtype)
+                )
                 if weights.ndim > 1:
                     weights = weights.squeeze(-1)
+                # weights are constants; only loss_per_sample carries actor gradients.
                 action_loss = (loss_per_sample * weights).mean()
             else:
                 action_loss = loss_per_sample.mean()
