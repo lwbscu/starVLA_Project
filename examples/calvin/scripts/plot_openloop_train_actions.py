@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unnorm-key", default="franka", help="Unnormalization key passed to PolicyServerWrapper")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Inference device")
     parser.add_argument("--use-bf16", action="store_true", help="Load policy in bfloat16")
+    parser.add_argument("--video-backend", default="pyav", choices=["pyav", "opencv", "decord", "torchcodec"], help="Backend used when images are stored as external videos")
     parser.add_argument("--max-episodes-scan", type=int, default=256, help="Max parquets to scan when selecting episodes")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
@@ -97,6 +98,80 @@ def decode_image(value: Any) -> Image.Image:
             arr = arr.astype(np.uint8)
         return Image.fromarray(arr).convert("RGB")
     raise TypeError(f"cannot decode image value type={type(value)} shape={getattr(arr, 'shape', None)}")
+
+
+def episode_index_from_row_or_path(row: pd.Series, parquet: Path) -> int:
+    if "episode_index" in row:
+        return int(row["episode_index"])
+    stem = parquet.stem
+    if stem.startswith("episode_"):
+        return int(stem.replace("episode_", "", 1))
+    raise KeyError(f"cannot infer episode_index from row or parquet path: {parquet}")
+
+
+def read_video_frame(
+    *,
+    dataset_root: Path,
+    info: dict[str, Any],
+    row: pd.Series,
+    parquet: Path,
+    video_key: str,
+    timestamp: float,
+    backend: str,
+) -> Image.Image:
+    video_path_pattern = info.get("video_path")
+    chunk_size = int(info.get("chunks_size", 1000))
+    if not video_path_pattern:
+        raise KeyError("meta/info.json has no video_path; cannot read external video frames")
+
+    episode_index = episode_index_from_row_or_path(row, parquet)
+    episode_chunk = episode_index // chunk_size
+    video_path = dataset_root / video_path_pattern.format(
+        episode_chunk=episode_chunk,
+        episode_index=episode_index,
+        video_key=video_key,
+    )
+    if not video_path.is_file():
+        raise FileNotFoundError(
+            f"video frame source missing for key={video_key!r}: {video_path}. "
+            "If this dataset stores image bytes in parquet, check modality original_key mapping."
+        )
+
+    from starVLA.dataloader.gr00t_lerobot.video import get_frames_by_timestamps
+
+    frames = get_frames_by_timestamps(
+        video_path.as_posix(),
+        np.asarray([float(timestamp)], dtype=np.float64),
+        video_backend=backend,
+    )
+    frame = np.asarray(frames[0])
+    if backend == "opencv":
+        frame = frame[..., ::-1]
+    return Image.fromarray(frame.astype(np.uint8)).convert("RGB")
+
+
+def resolve_image(
+    *,
+    dataset_root: Path,
+    info: dict[str, Any],
+    row: pd.Series,
+    parquet: Path,
+    video_key: str,
+    backend: str,
+) -> Image.Image:
+    if video_key in row:
+        return decode_image(row[video_key])
+    if "timestamp" not in row:
+        raise KeyError(f"row has no {video_key!r} column and no timestamp for video lookup")
+    return read_video_frame(
+        dataset_root=dataset_root,
+        info=info,
+        row=row,
+        parquet=parquet,
+        video_key=video_key,
+        timestamp=float(row["timestamp"]),
+        backend=backend,
+    )
 
 
 def as_vector(value: Any) -> np.ndarray:
@@ -225,8 +300,22 @@ def main() -> None:
         for start in starts:
             row = df.iloc[int(start)]
             gt = action_chunk(df, action_key, int(start), args.action_horizon)
-            image = decode_image(row[image_key])
-            wrist = decode_image(row[wrist_key])
+            image = resolve_image(
+                dataset_root=args.dataset_root,
+                info=info,
+                row=row,
+                parquet=parquet,
+                video_key=image_key,
+                backend=args.video_backend,
+            )
+            wrist = resolve_image(
+                dataset_root=args.dataset_root,
+                info=info,
+                row=row,
+                parquet=parquet,
+                video_key=wrist_key,
+                backend=args.video_backend,
+            )
             state = as_vector(row[state_key])
             if state.shape[0] != 8:
                 raise ValueError(f"expected state dim 8, got {state.shape} in {parquet}:{start}")
