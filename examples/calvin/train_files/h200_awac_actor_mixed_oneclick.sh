@@ -18,9 +18,53 @@ export CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/26220
 export ROLLOUT_SRC="${ROLLOUT_SRC:-${PROJECT_ROOT}/results/rollout/pi_state_4b_awac_parallel_500seq_v1}"
 export ROLLOUT_EVAL_ROOT="${ROLLOUT_EVAL_ROOT:-${PROJECT_ROOT}/awac_datasets/rollout_4b_500seq_merged/eval}"
 export CALVIN_DATA_ROOT="${CALVIN_DATA_ROOT:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}"
-export CRITIC_RUN_ROOT="${CRITIC_RUN_ROOT:-${PROJECT_ROOT}/logs/awac_smoke_20260519_232545/critic_alone}"
-export critic_checkpoint="${critic_checkpoint:-${CRITIC_RUN_ROOT}/checkpoints/steps_3000_critic.pt}"
+export AWAC_SMOKE_LOG_ROOT="${AWAC_SMOKE_LOG_ROOT:-${PROJECT_ROOT}/logs/awac_smoke_20260519_232545}"
+export CRITIC_RUN_ROOT="${CRITIC_RUN_ROOT:-${AWAC_SMOKE_LOG_ROOT}/critic_alone}"
+export critic_checkpoint="${critic_checkpoint:-}"
 export SKIP_DATA_PREP="${SKIP_DATA_PREP:-true}"
+
+_resolve_critic_checkpoint() {
+  # 1) User-provided path or CRITIC_RUN_ROOT default.
+  local candidates=()
+  if [[ -n "${critic_checkpoint:-}" ]]; then
+    candidates+=("${critic_checkpoint}")
+  fi
+  candidates+=(
+    "${CRITIC_RUN_ROOT}/checkpoints/steps_3000_critic.pt"
+    "${AWAC_SMOKE_LOG_ROOT}/critic_alone/checkpoints/steps_3000_critic.pt"
+    "${AWAC_SMOKE_LOG_ROOT}/critic_realone/checkpoints/steps_3000_critic.pt"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -n "${c}" && -f "${c}" ]]; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  # 2) Search under smoke log root (any sub-run folder name).
+  if [[ -d "${AWAC_SMOKE_LOG_ROOT}" ]]; then
+    local found
+    found="$(
+      find "${AWAC_SMOKE_LOG_ROOT}" -maxdepth 4 -type f -name 'steps_3000_critic.pt' 2>/dev/null \
+        | sort -V \
+        | tail -n 1
+    )"
+    if [[ -n "${found}" && -f "${found}" ]]; then
+      echo "${found}"
+      return 0
+    fi
+    found="$(
+      find "${AWAC_SMOKE_LOG_ROOT}" -maxdepth 4 -type f -name 'steps_*_critic.pt' 2>/dev/null \
+        | sort -V \
+        | tail -n 1
+    )"
+    if [[ -n "${found}" && -f "${found}" ]]; then
+      echo "${found}"
+      return 0
+    fi
+  fi
+  return 1
+}
 
 cd "${PROJECT_ROOT}"
 
@@ -64,26 +108,22 @@ test -f "${CALVIN_DATA_ROOT}/calvin_task_ABC_D/meta/info.json"
 test -f "${ROLLOUT_EVAL_ROOT}/rollout_lerobot/meta/info.json"
 test -f "${ALLOWLIST_PATH}"
 
-if [[ -z "${critic_checkpoint:-}" || ! -f "${critic_checkpoint}" ]]; then
-  critic_checkpoint=""
-fi
-if [[ -z "${critic_checkpoint:-}" ]]; then
-  if [[ ! -d "${CRITIC_RUN_ROOT}/checkpoints" ]]; then
-    echo "ERROR: No critic_checkpoint set and CRITIC_RUN_ROOT missing checkpoints: ${CRITIC_RUN_ROOT}" >&2
-    exit 2
+_REQUESTED_CRITIC="${critic_checkpoint:-}"
+if ! critic_checkpoint="$(_resolve_critic_checkpoint)"; then
+  echo "ERROR: Could not find critic checkpoint." >&2
+  echo "  Requested critic_checkpoint=${_REQUESTED_CRITIC:-<unset>}" >&2
+  echo "  CRITIC_RUN_ROOT=${CRITIC_RUN_ROOT}" >&2
+  echo "  AWAC_SMOKE_LOG_ROOT=${AWAC_SMOKE_LOG_ROOT}" >&2
+  if [[ -d "${AWAC_SMOKE_LOG_ROOT}" ]]; then
+    echo "  Subdirs under smoke log root:" >&2
+    ls -la "${AWAC_SMOKE_LOG_ROOT}" >&2 || true
+    echo "  Any steps_*_critic.pt under smoke log root:" >&2
+    find "${AWAC_SMOKE_LOG_ROOT}" -maxdepth 5 -type f -name 'steps_*_critic.pt' 2>/dev/null >&2 || true
   fi
-  critic_checkpoint="$(
-    find "${CRITIC_RUN_ROOT}/checkpoints" -maxdepth 1 -type f -name 'steps_*_critic.pt' -print \
-      | sort -V \
-      | tail -n 1
-  )"
-  if [[ -z "${critic_checkpoint}" ]]; then
-    echo "ERROR: No steps_*_critic.pt under ${CRITIC_RUN_ROOT}/checkpoints" >&2
-    exit 2
-  fi
-  echo "[preflight] Auto-selected latest critic: ${critic_checkpoint}"
+  exit 2
 fi
 export critic_checkpoint
+echo "[preflight] Using critic_checkpoint=${critic_checkpoint}"
 test -f "${critic_checkpoint}"
 
 "${STAR_VLA_PYTHON}" - <<'PY' "${base_vlm}" "${critic_checkpoint}"
