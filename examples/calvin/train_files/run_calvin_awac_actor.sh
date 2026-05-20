@@ -26,6 +26,9 @@ bc_checkpoint=${bc_checkpoint:-./results/Checkpoints/your_bc_run/checkpoints/ste
 critic_checkpoint=${critic_checkpoint:-./logs/awac_calvin_critic/checkpoints/steps_50000_critic.pt}
 run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_actor}
+actor_max_train_steps=${actor_max_train_steps:-30000}
+save_interval=${save_interval:-5000}
+per_device_batch_size=${per_device_batch_size:-}
 num_processes=${num_processes:-8}
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-python}
 ACCELERATE_LAUNCH=("${STAR_VLA_PYTHON}" -m accelerate.commands.launch)
@@ -53,8 +56,9 @@ cp "$0" "${output_dir}/"
   --datasets.awac_data.failure_reward "${failure_reward}" \
   --trainer.pretrained_checkpoint "${bc_checkpoint}" \
   --trainer.awac_critic_checkpoint "${critic_checkpoint}" \
-  --trainer.actor_max_train_steps 30000 \
-  --trainer.save_interval 5000 \
+  --trainer.actor_max_train_steps "${actor_max_train_steps}" \
+  --trainer.save_interval "${save_interval}" \
   --trainer.freeze_modules qwen_vl_interface \
   --run_root_dir "${run_root_dir}" \
-  --run_id "${run_id}"
+  --run_id "${run_id}" \
+  ${per_device_batch_size:+--datasets.awac_data.per_device_batch_size "${per_device_batch_size}"}

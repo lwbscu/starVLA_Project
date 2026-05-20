@@ -521,7 +521,7 @@ def check_dataset(
             continue
 
         total_frames += len(df)
-        valid_transitions += max(0, len(df) - 2 * horizon + 1)
+        valid_transitions += max(0, len(df) - horizon + 1)
         column_counts.update(df.columns)
 
         present_state = [key for key in state_keys if key in df.columns]
@@ -651,7 +651,7 @@ def check_dataset(
             f"sampled_valid_transitions={valid_transitions}, sampled_frames={total_frames}, H={horizon}",
         )
     else:
-        report.add(section, "FAIL", "valid AWAC transitions", f"no sampled t+2H transitions, H={horizon}")
+        report.add(section, "FAIL", "valid AWAC transitions", f"no sampled t+H-1 transitions, H={horizon}")
 
 
 def check_rollout_dataset_columns(
@@ -709,7 +709,7 @@ def check_rollout_dataset_columns(
             missing_required.append(f"{parquet}: missing {missing}")
             continue
 
-        valid_transitions += max(0, len(df) - 2 * horizon + 1)
+        valid_transitions += max(0, len(df) - horizon + 1)
         state_actual_dim = sample_dimension(df, "state")
         action_actual_dim = sample_dimension(df, "actions")
         if state_actual_dim != state_dim:

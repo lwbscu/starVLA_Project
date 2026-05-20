@@ -13,4 +13,9 @@ DATASET_NAMED_MIXTURES = {
     "calvin_rollout_h200": [
         ("rollout_lerobot", 1.0, "libero_franka"),
     ],
+    # Expert demos + policy rollout (1:1 per-sample when balance_datasets=true in awac_data).
+    "calvin_awac_mixed_h200": [
+        ("calvin_task_ABC_D", 1.0, "libero_franka"),
+        ("rollout_lerobot", 1.0, "libero_franka"),
+    ],
 }

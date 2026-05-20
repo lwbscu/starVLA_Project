@@ -84,17 +84,17 @@ w = \mathrm{clip}\Big(\exp\big(\frac{A}{\lambda}\big),\; w_{\max}\Big)
 | `s` | 帧 `t`：图像、语言、state |
 | `a` | `[t, t+H)` 动作块 |
 | `r` | `reward.iloc[t]`（已是 \(R_{chunk}(t)\)） |
-| `s'` | 帧 `t+H` |
-| `a'` | `[t+H, t+2H)` 行为动作（**离线数据**，不是 policy rollout） |
+| `s'` | 帧 `min(t+H, T-1)`；常规步为 `t+H`，末段 clamp 到最后一帧 |
+| `a'` | 帧 `min(t+H, T-1)` 上的动作块（**离线数据**，不是 policy rollout） |
 | `done` | `done.iloc[t]` |
 
 **不可改过滤条件**：
 
 ```text
-base_index + 2 * H <= traj_len
+base_index + H - 1 < traj_len
 ```
 
-保证 `s'` 与 `a'` 在轨迹内真实存在。日志里 `[AWAC] ... valid transitions` 比例骤降时，先查 `H` 是否与数据长度、预处理一致。
+保证 chunk 奖励/终止标记使用的窗口 `[t, t+H-1]` 完全落在 episode 内（含最后 H 帧的有效 `done`/`r`）。`s'`/`a'` 在 `t+H >= T` 时 clamp 到 `T-1` 做 bootstrap。日志里 `[AWAC] ... valid transitions` 比例骤降时，先查 `H` 是否与数据长度、预处理一致。
 
 **相机顺序**（与 Critic 一致）：`modality_keys["video"]` 第 0 路 = 头部静态相机，第 1 路 = 腕部相机 → Critic `HEAD_CAMERA_INDEX=0`、`WRIST_CAMERA_INDEX=1`。
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import warnings
 from pathlib import Path
 from typing import Any
@@ -211,8 +212,10 @@ class AWACTransitionDataset(Dataset):
         step_penalty: float = -1.0,
         success_reward: float = 0.0,
         failure_reward: float = -3000.0,
+        episode_allowlist: set[int] | None = None,
     ):
         self.base_dataset = base_dataset
+        self.episode_allowlist = episode_allowlist
         self.action_horizon = int(action_horizon)
         self.include_state = include_state
         self.state_dim = int(state_dim) if state_dim is not None else None
@@ -230,16 +233,25 @@ class AWACTransitionDataset(Dataset):
 
         self.valid_steps: list[tuple[int, int]] = []
         for trajectory_id, base_index in base_dataset.all_steps:
+            if self.episode_allowlist is not None and int(trajectory_id) not in self.episode_allowlist:
+                continue
             traj_idx = base_dataset.get_trajectory_index(trajectory_id)
             traj_len = int(base_dataset.trajectory_lengths[traj_idx])
-            if base_index + 2 * self.action_horizon <= traj_len:
+            # Chunk reward/done use frames [t, t+H-1]; require the full H-step window in-episode.
+            # (Legacy filter t+2H<=T kept s' at t+H and a' at t+2H; last-H done/r were excluded.)
+            if base_index + self.action_horizon - 1 < traj_len:
                 self.valid_steps.append((trajectory_id, base_index))
 
-        if dist.is_initialized() and dist.get_rank() == 0:
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            allow_msg = (
+                f", episode_allowlist={len(self.episode_allowlist)}"
+                if self.episode_allowlist is not None
+                else ""
+            )
             print(
                 f"[AWAC] {base_dataset.dataset_name}: "
                 f"{len(self.valid_steps)}/{len(base_dataset.all_steps)} valid transitions "
-                f"(H={self.action_horizon})"
+                f"(H={self.action_horizon}{allow_msg})"
             )
             if self.compute_rewards_on_the_fly:
                 print(
@@ -255,7 +267,10 @@ class AWACTransitionDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         trajectory_id, base_index = self.valid_steps[index]
         horizon = self.action_horizon
-        next_index = base_index + horizon
+        traj_idx = self.base_dataset.get_trajectory_index(trajectory_id)
+        traj_len = int(self.base_dataset.trajectory_lengths[traj_idx])
+        # Bootstrap state s' at t+H when in range; else last frame (near episode end).
+        next_index = min(base_index + horizon, traj_len - 1)
 
         raw_current = self.base_dataset.get_step_data(trajectory_id, base_index)
         raw_next = self.base_dataset.get_step_data(trajectory_id, next_index)
@@ -278,8 +293,6 @@ class AWACTransitionDataset(Dataset):
             )
             self._reward_warning_issued = True
 
-        traj_idx = self.base_dataset.get_trajectory_index(trajectory_id)
-        traj_len = int(self.base_dataset.trajectory_lengths[traj_idx])
         if self.compute_rewards_on_the_fly and self.reward_column not in traj_df.columns:
             episode_success = read_episode_success(
                 traj_df,
@@ -332,19 +345,56 @@ class AWACTransitionDataset(Dataset):
         return transition
 
 
+def _load_episode_allowlist(data_cfg, dataset_name: str) -> set[int] | None:
+    allowlist_path = data_cfg.get("episode_allowlists_path", None)
+    if not allowlist_path:
+        return None
+    payload = json.loads(Path(allowlist_path).read_text(encoding="utf-8"))
+    episode_ids = payload.get(dataset_name, None)
+    if episode_ids is None:
+        return None
+    return {int(ep_id) for ep_id in episode_ids}
+
+
+def _resolve_awac_dataset_root(data_cfg, dataset_name: str) -> Path:
+    """Per-dataset LeRobot parent dir (subdir name is ``dataset_name``)."""
+    roots = data_cfg.get("dataset_roots", None)
+    if roots is not None:
+        try:
+            from omegaconf import OmegaConf
+
+            roots = OmegaConf.to_container(roots, resolve=True)
+        except Exception:
+            roots = dict(roots) if hasattr(roots, "items") else roots
+        if isinstance(roots, dict) and dataset_name in roots:
+            return Path(roots[dataset_name])
+    return Path(data_cfg.data_root_dir)
+
+
 class AWACTransitionMixtureDataset(Dataset):
     """Weighted mixture of AWACTransitionDataset instances."""
 
-    def __init__(self, transition_datasets: list[AWACTransitionDataset], weights: list[float], seed: int = 42):
+    def __init__(
+        self,
+        transition_datasets: list[AWACTransitionDataset],
+        weights: list[float],
+        seed: int = 42,
+        balance_by_dataset: bool = False,
+    ):
         if not transition_datasets:
             raise ValueError("No AWAC transition datasets provided.")
         self.datasets = transition_datasets
         weights_arr = np.asarray(weights, dtype=np.float64)
-        lengths = np.asarray([len(ds) for ds in transition_datasets], dtype=np.float64)
-        weights_arr = weights_arr * lengths
-        if weights_arr.sum() <= 0:
-            weights_arr = np.ones(len(transition_datasets), dtype=np.float64)
-        self.weights = weights_arr / weights_arr.sum()
+        if balance_by_dataset:
+            if weights_arr.sum() <= 0:
+                weights_arr = np.ones(len(transition_datasets), dtype=np.float64)
+            self.weights = weights_arr / weights_arr.sum()
+        else:
+            lengths = np.asarray([len(ds) for ds in transition_datasets], dtype=np.float64)
+            weights_arr = weights_arr * lengths
+            if weights_arr.sum() <= 0:
+                weights_arr = np.ones(len(transition_datasets), dtype=np.float64)
+            self.weights = weights_arr / weights_arr.sum()
         self.seed = seed
         self._rng = np.random.default_rng(seed)
 
@@ -363,8 +413,8 @@ def get_awac_dataset(
     state_dim: int | None = None,
     gamma: float | None = None,
 ) -> Dataset:
-    data_root_dir = Path(data_cfg.data_root_dir)
     data_mix = data_cfg.data_mix
+    balance_by_dataset = data_cfg.get("balance_datasets", False) not in ["False", False]
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
     include_state = data_cfg.get("include_state", True) not in ["False", False]
     reward_column = data_cfg.get("reward_column", "reward")
@@ -382,8 +432,9 @@ def get_awac_dataset(
     transition_sets: list[AWACTransitionDataset] = []
     weights: list[float] = []
     for d_name, d_weight, robot_type in mixture_spec:
+        dataset_root = _resolve_awac_dataset_root(data_cfg, d_name)
         base = make_LeRobotSingleDataset(
-            data_root_dir,
+            dataset_root,
             d_name,
             robot_type,
             delete_pause_frame=delete_pause_frame,
@@ -405,13 +456,26 @@ def get_awac_dataset(
                 step_penalty=step_penalty,
                 success_reward=success_reward,
                 failure_reward=failure_reward,
+                episode_allowlist=_load_episode_allowlist(data_cfg, d_name),
             )
         )
         weights.append(float(d_weight))
 
     if len(transition_sets) == 1:
         return transition_sets[0]
-    return AWACTransitionMixtureDataset(transition_sets, weights, seed=data_cfg.get("seed", 42))
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        for ds, w in zip(transition_sets, weights):
+            print(
+                f"[AWAC] mixture: {ds.base_dataset.dataset_name} "
+                f"len={len(ds)} nominal_weight={w} root={ds.base_dataset.dataset_path}"
+            )
+        print(f"[AWAC] mixture sampling: balance_by_dataset={balance_by_dataset}")
+    return AWACTransitionMixtureDataset(
+        transition_sets,
+        weights,
+        seed=data_cfg.get("seed", 42),
+        balance_by_dataset=balance_by_dataset,
+    )
 
 
 def build_awac_dataloader(cfg):
