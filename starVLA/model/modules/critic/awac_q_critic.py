@@ -16,6 +16,15 @@ HEAD_CAMERA_INDEX = 0
 WRIST_CAMERA_INDEX = 1
 
 
+def _nested_attr(obj: Any, path: list[str]) -> Any | None:
+    current = obj
+    for name in path:
+        current = getattr(current, name, None)
+        if current is None:
+            return None
+    return current
+
+
 def soft_update_target(target: nn.Module, source: nn.Module, tau: float) -> None:
     with torch.no_grad():
         for tp, sp in zip(target.parameters(), source.parameters()):
@@ -28,16 +37,19 @@ def resolve_qwen_visual_module(qwen_vl_interface: nn.Module) -> tuple[nn.Module 
 
     - Qwen2.5-VL: ``qwen_vl_interface.model.visual``
     - Qwen3.5-VL: ``qwen_vl_interface.model.model.visual`` (see project README freeze_modules)
+    - PEFT LoRA: ``qwen_vl_interface.model.base_model.model.(model.)visual``
     """
     backbone = getattr(qwen_vl_interface, "model", None)
     if backbone is None:
         return None, "missing:qwen_vl_interface.model"
 
-    inner = getattr(backbone, "model", None)
-    candidates: list[tuple[str, nn.Module | None]] = []
-    if inner is not None:
-        candidates.append(("model.model.visual", getattr(inner, "visual", None)))
-    candidates.append(("model.visual", getattr(backbone, "visual", None)))
+    candidates: list[tuple[str, nn.Module | None]] = [
+        ("model.base_model.model.model.visual", _nested_attr(backbone, ["base_model", "model", "model", "visual"])),
+        ("model.base_model.model.visual", _nested_attr(backbone, ["base_model", "model", "visual"])),
+        ("model.model.model.visual", _nested_attr(backbone, ["model", "model", "visual"])),
+        ("model.model.visual", _nested_attr(backbone, ["model", "visual"])),
+        ("model.visual", getattr(backbone, "visual", None)),
+    ]
 
     for path, module in candidates:
         if module is not None:
@@ -100,7 +112,7 @@ class AWACQCritic(nn.Module):
         elif freeze_visual:
             raise RuntimeError(
                 "AWACQCritic could not find a standalone Qwen visual tower. "
-                "Tried model.model.visual (Qwen3.5-VL) and model.visual (Qwen2.5-VL). "
+                "Tried native Qwen visual paths and PEFT LoRA base_model visual paths. "
                 "Refusing full-VLM fallback for critic training."
             )
 
