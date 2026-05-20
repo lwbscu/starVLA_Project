@@ -22,6 +22,29 @@ def soft_update_target(target: nn.Module, source: nn.Module, tau: float) -> None
             tp.data.mul_(1.0 - tau).add_(sp.data, alpha=tau)
 
 
+def resolve_qwen_visual_module(qwen_vl_interface: nn.Module) -> tuple[nn.Module | None, str]:
+    """
+    Locate the standalone vision tower on the wrapped Qwen-VL backbone.
+
+    - Qwen2.5-VL: ``qwen_vl_interface.model.visual``
+    - Qwen3.5-VL: ``qwen_vl_interface.model.model.visual`` (see project README freeze_modules)
+    """
+    backbone = getattr(qwen_vl_interface, "model", None)
+    if backbone is None:
+        return None, "missing:qwen_vl_interface.model"
+
+    inner = getattr(backbone, "model", None)
+    candidates: list[tuple[str, nn.Module | None]] = []
+    if inner is not None:
+        candidates.append(("model.model.visual", getattr(inner, "visual", None)))
+    candidates.append(("model.visual", getattr(backbone, "visual", None)))
+
+    for path, module in candidates:
+        if module is not None:
+            return module, path
+    return None, "not_found"
+
+
 class AWACQCritic(nn.Module):
     """
     Q(s, a) with E heads.
@@ -66,7 +89,7 @@ class AWACQCritic(nn.Module):
             for param in qwen_vl_interface.parameters():
                 param.requires_grad = False
 
-        actor_visual = getattr(getattr(qwen_vl_interface, "model", None), "visual", None)
+        actor_visual, self.visual_source_path = resolve_qwen_visual_module(qwen_vl_interface)
         self.visual = None
         if actor_visual is not None:
             self.visual = copy.deepcopy(actor_visual)
@@ -74,6 +97,12 @@ class AWACQCritic(nn.Module):
             if freeze_visual:
                 for param in self.visual.parameters():
                     param.requires_grad = False
+        elif freeze_visual:
+            raise RuntimeError(
+                "AWACQCritic could not find a standalone Qwen visual tower. "
+                "Tried model.model.visual (Qwen3.5-VL) and model.visual (Qwen2.5-VL). "
+                "Refusing full-VLM fallback for critic training."
+            )
 
         visual_out_dim = self._infer_visual_out_dim()
         text_out_dim = self._infer_text_hidden_dim()

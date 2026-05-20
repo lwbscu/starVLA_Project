@@ -21,7 +21,7 @@ from transformers import get_scheduler
 from starVLA.dataloader.awac_transition_dataset import build_awac_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
-from starVLA.model.modules.critic import AWACQCritic, soft_update_target
+from starVLA.model.modules.critic import AWACQCritic, resolve_qwen_visual_module, soft_update_target
 from starVLA.training.awac_train_utils import assert_module_frozen, freeze_module
 from starVLA.training.trainer_utils.config_tracker import wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, normalize_dotlist_args
@@ -46,24 +46,25 @@ def log_awac_critic_model_scope(cfg, actor, critic: AWACQCritic) -> None:
     backbone = getattr(qwen_iface, "model", None)
 
     visual = getattr(critic, "visual", None)
-    visual_src = getattr(backbone, "visual", None) if backbone is not None else None
+    visual_src, visual_src_path = resolve_qwen_visual_module(qwen_iface)
 
     lines = [
         "========== AWAC critic model scope (rank 0) ==========",
         f"base_vlm path: {base_vlm}",
         f"BC checkpoint: {getattr(cfg.trainer, 'pretrained_checkpoint', None)}",
         f"frozen actor (init only): {_count_params(actor) / 1e6:.1f}M params "
-        f"(trainable {_count_params(actor, True) / 1e6:.1f}M)",
-        f"critic.visual (deepcopy of Qwen .visual, frozen forward): "
+        f"(trainable {_count_params(actor, True) / 1e6:.1f}M; includes full QwenPI + action_model)",
+        f"qwen visual source path: {visual_src_path} "
+        f"(resolved={'yes' if visual_src is not None else 'no'})",
+        f"critic.visual deepcopy (frozen vision-only forward): "
         f"{_count_params(visual) / 1e6:.1f}M params"
         if visual is not None
-        else "critic.visual: MISSING (would fall back to full VLM forward)",
-        f"source actor.model.visual exists: {visual_src is not None}",
+        else "critic.visual: MISSING",
         f"critic trainable (Q head + 6L Transformer + proj): "
         f"{_count_params(critic, True) / 1e6:.1f}M params",
-        f"critic total: {_count_params(critic) / 1e6:.1f}M params",
-        "Forward path: 2x frozen visual tower + text embed (no LLM decode) + 6L critic Transformer.",
-        "NOT used for Q: action_model diffusion, VLM decoder layers, policy rollout.",
+        f"critic total (visual copy + trainable): {_count_params(critic) / 1e6:.1f}M params",
+        "Forward path: 2x visual tower / camera + text embed only + 6L critic Transformer.",
+        "NOT used for Q forward: LLM decoder, action_model diffusion, policy rollout.",
         "====================================================",
     ]
     for line in lines:

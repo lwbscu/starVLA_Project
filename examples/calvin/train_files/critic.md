@@ -106,7 +106,7 @@ base_index + H - 1 < traj_len
 [vision(2) | text(1) | action(H) | state(1) | query(E)]
 ```
 
-- **Vision**：从 BC 的 `qwen_vl_interface.model.visual` **deepcopy** 两路编码，**不是**整段 VLM forward 再 pool。
+- **Vision**：从 BC 的 Qwen 视觉塔 **deepcopy** 两路编码（Qwen3.5-VL 路径为 `qwen_vl_interface.model.model.visual`；Qwen2.5-VL 为 `model.visual`），**不是**整段 VLM forward 再 pool。找不到 visual 子模块时会 **直接报错**，不会静默退回 full-VLM。
 - **Text**：`tokenize → embed_tokens → mean pool → (B,1,D)`，**不走** visual 塔。
 - **Q 读出位置**：Transformer 输出序列**最后 E 个 token**（query 槽位）经 `q_head` → 每头一个 Q。
 - **Twin Q**：`num_q_heads=E`；TD 与 Actor 优势一律用 **`min` over E**（`min_q` / `q_next.min`），不要改成 mean/max，除非整套算法重写。
