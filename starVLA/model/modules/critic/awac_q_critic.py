@@ -160,15 +160,31 @@ class AWACQCritic(nn.Module):
             return inner.embed_tokens
         raise RuntimeError("Cannot locate text embedding layer on qwen_vl_interface.model")
 
-    def _pool_visual_features(self, visual_out: torch.Tensor) -> torch.Tensor:
-        """Pool visual tower output to (B, visual_dim)."""
+    def _unwrap_visual_tensor(self, visual_out: Any) -> torch.Tensor:
+        """Qwen2.5 visual may return Tensor; Qwen3.5 visual returns ModelOutput with pooling."""
         if isinstance(visual_out, tuple):
             visual_out = visual_out[0]
-        if visual_out.ndim == 3:
-            return visual_out.mean(dim=1)
-        if visual_out.ndim == 2:
+        if torch.is_tensor(visual_out):
             return visual_out
-        return visual_out.reshape(visual_out.shape[0], -1, visual_out.shape[-1]).mean(dim=1)
+        pooler = getattr(visual_out, "pooler_output", None)
+        if pooler is not None:
+            return pooler
+        last_hidden = getattr(visual_out, "last_hidden_state", None)
+        if last_hidden is not None:
+            return last_hidden
+        hidden_states = getattr(visual_out, "hidden_states", None)
+        if hidden_states is not None:
+            return hidden_states[-1]
+        raise TypeError(f"Unsupported visual tower output type: {type(visual_out)}")
+
+    def _pool_visual_features(self, visual_out: Any) -> torch.Tensor:
+        """Pool visual tower output to (B, visual_dim)."""
+        features = self._unwrap_visual_tensor(visual_out)
+        if features.ndim == 3:
+            return features.mean(dim=1)
+        if features.ndim == 2:
+            return features
+        return features.reshape(features.shape[0], -1, features.shape[-1]).mean(dim=1)
 
     def _run_visual_tower(
         self,
