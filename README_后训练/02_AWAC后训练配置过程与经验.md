@@ -2,6 +2,13 @@
 
 本文档用于交接当前 Calvin AWAC 后训练搭建过程。重点不是罗列所有历史方案，而是说明**当前为什么这样跑**、**哪些地方不能动**、**接手后先看什么**。
 
+**H200 上实际跑混训时，只认两个 oneclick（与 `01_H200_AWAC后训练运行命令.md` 一致）：**
+
+- `examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh`
+- `examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh`
+
+下文 §3–§6 中「单源 public + on-the-fly」是早期磁盘受限方案的背景说明；**当前混训主线**是 expert + rollout **1:1**、`data_mix=calvin_awac_mixed_h200`。
+
 ## 1. 背景与目标
 
 当前任务是把已经训练好的 PI-State BC baseline 接入 AWAC 后训练。BC 根目录：
@@ -199,11 +206,13 @@ find "${CRITIC_RUN}/checkpoints" -maxdepth 1 -type f -name 'steps_*_critic.pt' -
 steps_5000_critic.pt
 ```
 
-最终目标是：
+混训 critic（oneclick）目标是：
 
 ```text
-steps_50000_critic.pt
+steps_1000_critic.pt ... steps_10000_critic.pt
 ```
+
+单源备选才可能以 `steps_50000_critic.pt` 为终点（`calvin_abc_d_h200`，非混训）。
 
 ### 如果 loss 出问题
 
@@ -243,9 +252,9 @@ actor 输出 `steps_*_pytorch_model.pt` 后，再做 CALVIN eval / rollout 成�
 交接给下一位同学时，直接说：
 
 ```text
-当前后训练主线是 Qwen3.5-4B PI-State -> AWAC critic -> AWAC actor。
-数据使用 public calvin_abc_d/calvin_task_ABC_D，只读加载。
-success 真实读取，reward/done 在 dataloader 内即时计算。
-不复制完整数据集，不写 public parquet，不使用 assume_success_if_missing。
-9B 只有 25k checkpoint，不作为当前主线。
+H200 混训后训练：h200_awac_critic_mixed_oneclick.sh -> h200_awac_actor_mixed_oneclick.sh。
+BC：Qwen3.5-4B PI-State steps_30000；数据：calvin_awac_mixed_h200（expert + rollout 1:1）。
+reward/done：compute_rewards_on_the_fly=true；assume_success_if_missing=false。
+Critic：10k 步，save 每 1k；Actor：30k 步，save 每 5k，仅训 action head。
+不写 public parquet。9B 只有 25k，不作混训主线。
 ```

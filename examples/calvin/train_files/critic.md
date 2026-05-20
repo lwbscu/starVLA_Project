@@ -6,6 +6,15 @@
 
 **跑实验 / 排错**：请先读 **[§2 核心不可改逻辑](#2-核心不可改逻辑debug-必读)**，再改 yaml、shell 或训练代码。
 
+**H200 混训执行入口（与仓库脚本一致，优先于下文手写命令）：**
+
+| 阶段 | 脚本 |
+|------|------|
+| Critic | `examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh` |
+| Actor | `examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh` |
+
+混训默认：`data_mix=calvin_awac_mixed_h200`，`balance_datasets=true`，`compute_rewards_on_the_fly=true`，`assume_success_if_missing=false`；critic **10k** 步、`save_interval=1000`；actor **30k** 步、`save_interval=5000`。操作步骤见 `README_后训练/01_H200_AWAC后训练运行命令.md` §4b / §7b。
+
 ---
 
 ## 1. 原理简述
@@ -169,7 +178,7 @@ w = clip(exp(A / λ), w_max)
 | Actor | `steps_*_pytorch_model.pt` | 与 BC 相同，仅 **可训练 actor** 权重 |
 
 - 旧 ckpt 若含 `value_net` 键，Actor 加载会 **warning 并忽略**；应用新 Critic 重训。
-- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200` / `calvin_hlx_h200`）只是在 **`data_config.py` 注册表**里查子目录名，不是路径本身；实际目录 = `{data_root_dir}/{d_name}`。H200 原始数据 `calvin_abc_d_h200 → calvin_task_ABC_D`，增强数据 `calvin_hlx_h200 → hlx/calvin_task_ABC_D`。
+- `datasets.awac_data.data_mix`（如 `calvin_abc_d_h200` / `calvin_awac_mixed_h200` / `calvin_hlx_h200`）只是在 **`examples/calvin/train_files/data_registry/data_config.py`** 注册表查子目录名。混训 `calvin_awac_mixed_h200` = `calvin_task_ABC_D` + `rollout_lerobot`（`rollout_eval_root` 下），需 `episode_allowlists_path`（oneclick 生成）。H200 原始数据 `calvin_abc_d_h200 → calvin_task_ABC_D`。
 
 ### 2.6 可以安全改的配置（不破坏契约时）
 
@@ -281,7 +290,7 @@ python examples/calvin/scripts/prepare_awac_rewards.py \
 export calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
 export data_mix=calvin_abc_d_h200
 export compute_rewards_on_the_fly=true
-export assume_success_if_missing=true
+export assume_success_if_missing=false
 ```
 
 语义仍与第 2 节保持一致：
@@ -295,7 +304,15 @@ export assume_success_if_missing=true
 
 ## 4. Critic 训练
 
-### 4.1 脚本示例
+### 4.0 H200 混训 oneclick（推荐）
+
+```bash
+bash examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh
+```
+
+等价于设置 `data_mix=calvin_awac_mixed_h200` 后调用 `run_calvin_awac_critic.sh`（yaml：`starvla_awac_calvin_mixed.yaml`）。混训时 shell 默认 `critic_max_train_steps=10000`、`save_interval=1000`；单源 `calvin_abc_d_h200` 时默认 **50000 / 5000**。
+
+### 4.1 脚本示例（单源或自定义 export）
 
 ```bash
 # 仓库根目录
@@ -374,10 +391,10 @@ tensorboard --logdir logs/awac_calvin_critic/tensorboard --port 6006
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `pretrained_checkpoint` | null | BC checkpoint（建议 shell 传入） |
-| `critic_max_train_steps` | 50000 | 训练步数 |
+| `critic_max_train_steps` | 50000（单源 yaml）；混训 oneclick 覆盖为 **10000** | 训练步数 |
 | `learning_rate.critic` | 3e-4 | Critic 学习率 |
 | `num_warmup_steps` | 1000 | 预热 |
-| `save_interval` | 5000 | 存盘间隔 |
+| `save_interval` | 5000（单源）；混训 oneclick 覆盖为 **1000** | 存盘间隔 |
 | `logging_frequency` | 50 | 日志间隔 |
 | `use_tensorboard` | true | 关闭则 `false` |
 | `max_grad_norm` | 1.0 | 梯度裁剪 |
@@ -402,7 +419,17 @@ CLI 覆盖示例：
 
 ## 5. Actor 训练
 
-### 5.1 脚本示例
+### 5.0 H200 混训 oneclick（推荐）
+
+```bash
+export CRITIC_RUN_ROOT=logs/20260520_awac_pi_state_mixed/awac_critic_mixed_8gpu_10k
+export critic_checkpoint="${CRITIC_RUN_ROOT}/checkpoints/steps_10000_critic.pt"
+bash examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh
+```
+
+默认 `SKIP_DATA_PREP=true`（沿用 critic 阶段合并数据）。混训 shell 默认 `actor_max_train_steps=30000`、`save_interval=5000`、`per_device_batch_size=16`。
+
+### 5.1 脚本示例（单源或自定义 export）
 
 ```bash
 bash examples/calvin/train_files/run_calvin_awac_actor.sh

@@ -2,6 +2,15 @@
 
 Offline AWAC post-training for StarVLA `QwenPI` policies on Calvin LeRobot data.
 
+**H200 mixed training (expert + rollout 1:1)** — canonical entry points:
+
+```bash
+bash examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh
+bash examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh
+```
+
+See `README_后训练/01_H200_AWAC后训练运行命令.md` (Chinese) for defaults aligned with those scripts. Algorithm contract: `critic.md` §2.
+
 ## Prerequisites
 
 1. **BC checkpoint** from `train_starvla.py` (Phase 0).
@@ -48,10 +57,10 @@ make the dataloader compute `reward` and `done` at load time:
 export calvin_data_root=/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d
 export data_mix=calvin_abc_d_h200
 export compute_rewards_on_the_fly=true
-export assume_success_if_missing=true
+export assume_success_if_missing=false
 ```
 
-Use `assume_success_if_missing=true` only for verified expert demos where every
+H200 mixed oneclick uses `assume_success_if_missing=false` (real `success` in parquet). Use `assume_success_if_missing=true` only for verified expert demos where every
 episode is known to be successful. Otherwise, keep it false; missing `success`
 will raise an error instead of silently fabricating labels.
 

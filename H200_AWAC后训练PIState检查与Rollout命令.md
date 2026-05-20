@@ -1,6 +1,18 @@
 # H200 AWAC 后训练 PI-State 检查与 Rollout 命令
 
-目标：严格按 `examples/calvin/train_files/critic.md` 的 §2 契约检查 PI-State BC 结果、生成可后训练的 rollout LeRobot 数据，并进入 AWAC critic / actor。
+目标：按 `examples/calvin/train_files/critic.md` §2 检查 PI-State BC、生成 **rollout LeRobot**（供混训），并在 H200 上跑 AWAC。
+
+**混训训练入口（与仓库脚本一致）：**
+
+```bash
+bash examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh
+# critic 完成后：
+export CRITIC_RUN_ROOT="${PROJECT_ROOT}/logs/20260520_awac_pi_state_mixed/awac_critic_mixed_8gpu_10k"
+export critic_checkpoint="${CRITIC_RUN_ROOT}/checkpoints/steps_10000_critic.pt"
+bash examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh
+```
+
+下文 §3–§5 描述 rollout 采集与旧路线；**AWAC 混训不要**再用 §5 的 `calvin_rollout_h200` 单源脚本替代 oneclick。
 
 当前已检查的 BC 根目录：
 
@@ -174,7 +186,9 @@ find "${EVAL_OUTPUT_ROOT}" -path "*/rollout_lerobot/meta/info.json" -print \
   --no-require-preprocessed
 ```
 
-## 5. 用 Rollout 跑 AWAC
+## 5. 用 Rollout 跑 AWAC（历史 / 单源备选，非当前混训主线）
+
+> 当前混训请用文首 **两个 oneclick** + `calvin_awac_mixed_h200`。本节仅 rollout-only 单源实验。
 
 `calvin_rollout_h200` 已注册为：
 

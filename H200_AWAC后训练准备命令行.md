@@ -1,6 +1,13 @@
 # H200 AWAC 后训练准备命令行
 
-本文档用于把已训练好的 PI-State baseline 接到 `examples/calvin/train_files/critic.md` 的 AWAC 后训练流程。核心原则：不伪造成功，不绕过 `H=8 / gamma=0.996 / reward=chunk return / done=最后 H 帧` 的契约。
+本文档用于 **readiness、rollout 诊断、环境变量** 准备。混训 **Critic / Actor 训练** 请以两个 oneclick 为准（与 `README_后训练/01_H200_AWAC后训练运行命令.md` 一致）：
+
+```bash
+bash examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh
+bash examples/calvin/train_files/h200_awac_actor_mixed_oneclick.sh
+```
+
+算法契约见 `examples/calvin/train_files/critic.md` §2。核心原则：不伪造成功，不绕过 `H=8 / gamma=0.996 / reward=chunk return / done=最后 H 帧` 的契约。
 
 **数据安全原则**：不修改 `/inspire/.../public` 下的官方/比赛数据。`success`、`step_reward`、`reward`、`done` 只写入个人目录下的 AWAC 工作副本。
 
@@ -351,9 +358,11 @@ echo "inspect_status=$?"
 sed -n '1,320p' "$OUT/awac_readiness.md"
 ```
 
-只有 `overall: PASS` 后，才进入 `run_calvin_awac_critic.sh` / `run_calvin_awac_actor.sh`。
+只有 `overall: PASS` 后，才进入 AWAC 训练。混训入口为 **§ 上方 oneclick**，不是本节手写 `run_calvin_awac_*` 单源示例。
 
-## 7. 后训练入口示例
+## 7. 后训练入口示例（备选：单源 / 多模型排查）
+
+> **混训主线不要用本节**；见文档开头两个 `h200_awac_*_mixed_oneclick.sh`。
 
 先从单模型开始，不要三模型一起开，避免排错时互相污染。
 

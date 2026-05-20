@@ -158,6 +158,7 @@ playground/Models
 # temp
 calvin
 awac_datasets
+checkpoints
 playground/BuildData
 
 playground/Checkpoints

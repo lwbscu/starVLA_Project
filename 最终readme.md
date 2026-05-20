@@ -1,6 +1,10 @@
 # 一键运行脚本
 
-本文档按当前 `HEAD` 代码对齐最终训练、AWAC 后训练和 CALVIN ABC->D 评测。
+本文档按当前 `HEAD` 代码对齐 **LoRA BC + 单源 on-the-fly AWAC** 与 CALVIN 评测。
+
+> **与 H200 PI-State 混训 oneclick 不是同一条线。** 混训（expert + rollout 1:1）请用：
+> `examples/calvin/train_files/h200_awac_critic_mixed_oneclick.sh`、
+> `h200_awac_actor_mixed_oneclick.sh`，以及 `README_后训练/01_H200_AWAC后训练运行命令.md`。
 
 ## 0. 固定路径
 
