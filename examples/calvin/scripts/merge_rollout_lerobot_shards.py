@@ -57,17 +57,16 @@ def merge_rollout_shards(
                 }
         shutil.rmtree(dst)
     dst.mkdir(parents=True, exist_ok=True)
+    meta_dst = dst / "meta"
+    meta_dst.mkdir(parents=True, exist_ok=True)
+    (dst / "data").mkdir(parents=True, exist_ok=True)
+    (dst / "rollout_analysis").mkdir(parents=True, exist_ok=True)
 
     template = shard_roots[0]
     for rel in ("meta/modality.json", "meta/info.json"):
         src_path = template / rel
         if src_path.exists():
             shutil.copy2(src_path, dst / rel)
-
-    meta_dst = dst / "meta"
-    meta_dst.mkdir(parents=True, exist_ok=True)
-    (dst / "data").mkdir(parents=True, exist_ok=True)
-    (dst / "rollout_analysis").mkdir(parents=True, exist_ok=True)
 
     for name in ("episodes.jsonl", "episodes_stats.jsonl", "tasks.jsonl"):
         out = meta_dst / name
