@@ -45,9 +45,14 @@ def read_json(path: Path) -> dict[str, Any]:
 
 def original_keys(modality: dict[str, Any], group: str) -> list[str]:
     keys = []
+    seen = set()
     for key, cfg in modality.get(group, {}).items():
+        original_key = key
         if isinstance(cfg, dict):
-            keys.append(str(cfg.get("original_key", key)))
+            original_key = str(cfg.get("original_key", key))
+        if original_key not in seen:
+            seen.add(original_key)
+            keys.append(original_key)
     return keys
 
 
