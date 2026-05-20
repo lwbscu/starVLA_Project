@@ -43,20 +43,30 @@ _awac_build_gpu_list() {
   echo "${out}"
 }
 
-# Default: use 8 GPUs on H200 nodes unless the scheduler already narrowed visibility.
+# H200 default: use 8 GPUs when the node has them. Many login shells set CUDA_VISIBLE_DEVICES=0
+# by mistake; set AWAC_RESPECT_CUDA_VISIBLE_DEVICES=true to keep a narrow Slurm allocation.
 _PHYSICAL_GPUS="$(_awac_count_physical_gpus)"
-if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
-  if [[ "${_PHYSICAL_GPUS}" -ge 8 ]]; then
-    export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+_AWAC_TARGET_GPUS="${AWAC_NUM_GPUS:-8}"
+if [[ "${AWAC_RESPECT_CUDA_VISIBLE_DEVICES:-false}" == "true" ]]; then
+  :
+elif [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  if [[ "${_PHYSICAL_GPUS}" -ge "${_AWAC_TARGET_GPUS}" ]]; then
+    export CUDA_VISIBLE_DEVICES="$(_awac_build_gpu_list "${_AWAC_TARGET_GPUS}")"
   elif [[ "${_PHYSICAL_GPUS}" -gt 0 ]]; then
     export CUDA_VISIBLE_DEVICES="$(_awac_build_gpu_list "${_PHYSICAL_GPUS}")"
   else
-    export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+    export CUDA_VISIBLE_DEVICES="$(_awac_build_gpu_list "${_AWAC_TARGET_GPUS}")"
+  fi
+else
+  _VISIBLE_FROM_ENV="$(_awac_count_visible_from_env)"
+  if [[ "${_PHYSICAL_GPUS}" -ge "${_AWAC_TARGET_GPUS}" && "${_VISIBLE_FROM_ENV}" -lt "${_AWAC_TARGET_GPUS}" ]]; then
+    echo "[awac-critic] NOTE: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} exposes only ${_VISIBLE_FROM_ENV} GPU(s),"
+    echo "[awac-critic]       but nvidia-smi reports ${_PHYSICAL_GPUS}. Expanding to 0..$((_AWAC_TARGET_GPUS - 1))."
+    export CUDA_VISIBLE_DEVICES="$(_awac_build_gpu_list "${_AWAC_TARGET_GPUS}")"
   fi
 fi
 
 _VISIBLE_FROM_ENV="$(_awac_count_visible_from_env)"
-# num_processes follows visible GPUs unless explicitly overridden.
 export num_processes="${num_processes:-${_VISIBLE_FROM_ENV}}"
 
 export WANDB_MODE=${WANDB_MODE:-online}
