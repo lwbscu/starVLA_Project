@@ -84,7 +84,7 @@ class Qwen_PI_AWAC(Qwen_PI):
 
             loss_per_sample = self._flow_matching_loss_per_sample(vl_embs_list, actions_target, state_tensor)
             if awac_weights is not None:
-                weights = awac_weights.to(loss_per_sample.device, dtype=loss_per_sample.dtype)
+                weights = awac_weights.detach().to(loss_per_sample.device, dtype=loss_per_sample.dtype)
                 if weights.ndim > 1:
                     weights = weights.squeeze(-1)
                 action_loss = (loss_per_sample * weights).mean()

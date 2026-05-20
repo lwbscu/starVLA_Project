@@ -141,6 +141,8 @@ def compute_awac_weights(actor_pi, critic, batch, awac_cfg) -> tuple[torch.Tenso
         adv = q_pi - q_data
         weights = torch.exp(adv / float(awac_cfg.awac_lambda))
         weights = torch.clamp(weights, max=float(awac_cfg.awac_weight_max))
+        # Detach: weights are constants for actor loss; inference_mode tensors cannot backprop.
+        weights = weights.detach()
     metrics = {
         "awac_adv_mean": float(adv.detach().mean().cpu()),
         "q_pi_mean": float(q_pi.detach().mean().cpu()),
