@@ -75,7 +75,9 @@ export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 Framework_name=${Framework_name:-QwenPI}
-base_vlm=${base_vlm:-./playground/Pretrained_models/Qwen3.5-9B}
+# AWAC critic must use Qwen3.5-4B (BC checkpoint is 4B PI-State); do not default to 9B.
+H200_QWEN35_4B_DEFAULT=/inspire/qb-ilm2/project/26summer-camp-10/26220216/starVLA_Project/playground/Pretrained_models/Qwen3.5-4B
+base_vlm=${base_vlm:-${H200_QWEN35_4B_DEFAULT}}
 calvin_data_root=${calvin_data_root:-/inspire/qb-ilm2/project/26summer-camp-10/public/inspire_shared/calvin_abc_d}
 calvin_dataset_name=${calvin_dataset_name:-calvin_task_ABC_D}
 rollout_eval_root=${rollout_eval_root:-}
@@ -86,8 +88,8 @@ balance_datasets=${balance_datasets:-}
 if [[ "${data_mix}" == "calvin_awac_mixed_h200" ]]; then
   config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin_mixed.yaml}
   balance_datasets=${balance_datasets:-true}
-  critic_max_train_steps=${critic_max_train_steps:-10000}
-  save_interval=${save_interval:-5000}
+  critic_max_train_steps=${critic_max_train_steps:-2000}
+  save_interval=${save_interval:-1000}
   per_device_batch_size=${per_device_batch_size:-32}
 else
   config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_awac_calvin.yaml}
@@ -172,6 +174,7 @@ cp "$0" "${output_dir}/"
   --trainer.pretrained_checkpoint "${bc_checkpoint}" \
   --trainer.critic_max_train_steps "${critic_max_train_steps}" \
   --trainer.save_interval "${save_interval}" \
+  --trainer.use_tensorboard true \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
   ${per_device_batch_size:+--datasets.awac_data.per_device_batch_size "${per_device_batch_size}"} \

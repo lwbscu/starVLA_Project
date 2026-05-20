@@ -31,6 +31,46 @@ accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
 logger = get_logger(__name__)
 
 
+def _count_params(module: torch.nn.Module, trainable_only: bool = False) -> int:
+    if trainable_only:
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+    return sum(p.numel() for p in module.parameters())
+
+
+def log_awac_critic_model_scope(cfg, actor, critic: AWACQCritic) -> None:
+    """Rank-0 summary: which parts of Qwen 4B are used vs trained (critic phase)."""
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return
+    base_vlm = str(cfg.framework.qwenvl.base_vlm)
+    qwen_iface = critic.qwen_vl_interface
+    backbone = getattr(qwen_iface, "model", None)
+
+    visual = getattr(critic, "visual", None)
+    visual_src = getattr(backbone, "visual", None) if backbone is not None else None
+
+    lines = [
+        "========== AWAC critic model scope (rank 0) ==========",
+        f"base_vlm path: {base_vlm}",
+        f"BC checkpoint: {getattr(cfg.trainer, 'pretrained_checkpoint', None)}",
+        f"frozen actor (init only): {_count_params(actor) / 1e6:.1f}M params "
+        f"(trainable {_count_params(actor, True) / 1e6:.1f}M)",
+        f"critic.visual (deepcopy of Qwen .visual, frozen forward): "
+        f"{_count_params(visual) / 1e6:.1f}M params"
+        if visual is not None
+        else "critic.visual: MISSING (would fall back to full VLM forward)",
+        f"source actor.model.visual exists: {visual_src is not None}",
+        f"critic trainable (Q head + 6L Transformer + proj): "
+        f"{_count_params(critic, True) / 1e6:.1f}M params",
+        f"critic total: {_count_params(critic) / 1e6:.1f}M params",
+        "Forward path: 2x frozen visual tower + text embed (no LLM decode) + 6L critic Transformer.",
+        "NOT used for Q: action_model diffusion, VLM decoder layers, policy rollout.",
+        "====================================================",
+    ]
+    for line in lines:
+        logger.info(line)
+        print(line, flush=True)
+
+
 def setup_directories(cfg) -> Path:
     cfg.output_dir = os.path.join(cfg.run_root_dir, cfg.run_id)
     output_dir = Path(cfg.output_dir)
@@ -118,6 +158,10 @@ class AWACCriticTrainer(TrainerUtils):
         self._init_tensorboard()
         if self.accelerator.is_main_process:
             logger.info("AWAC critic phase: actor frozen; training Q network only.")
+            if self.tb_writer is not None:
+                logger.info(f"TensorBoard log dir: {self.tb_writer.log_dir}")
+                print(f"[tensorboard] writing to {self.tb_writer.log_dir}", flush=True)
+            log_awac_critic_model_scope(self.config, self.actor, self._unwrap_critic())
 
     def _save_checkpoint(self):
         if not self.accelerator.is_main_process:
