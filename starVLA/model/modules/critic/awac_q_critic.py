@@ -128,10 +128,23 @@ class AWACQCritic(nn.Module):
         self.q_head = nn.Linear(hidden_dim, 1)
 
     def _infer_visual_out_dim(self) -> int:
+        backbone = getattr(self.qwen_vl_interface, "model", None)
+        if backbone is not None:
+            cfg = getattr(backbone, "config", None)
+            if cfg is not None:
+                vision_cfg = getattr(cfg, "vision_config", None)
+                if vision_cfg is not None:
+                    for key in ("out_hidden_size", "hidden_size", "embed_dim"):
+                        value = getattr(vision_cfg, key, None)
+                        if value is not None:
+                            return int(value)
         if self.visual is not None:
+            max_dim = 0
             for tensor in self.visual.parameters():
                 if tensor.ndim == 2:
-                    return int(tensor.shape[1])
+                    max_dim = max(max_dim, int(tensor.shape[0]), int(tensor.shape[1]))
+            if max_dim > 0:
+                return max_dim
         return self._infer_text_hidden_dim()
 
     def _infer_text_hidden_dim(self) -> int:
@@ -177,14 +190,63 @@ class AWACQCritic(nn.Module):
             return hidden_states[-1]
         raise TypeError(f"Unsupported visual tower output type: {type(visual_out)}")
 
-    def _pool_visual_features(self, visual_out: Any) -> torch.Tensor:
-        """Pool visual tower output to (B, visual_dim)."""
+    def _pool_visual_features(
+        self,
+        visual_out: Any,
+        grid_thw: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Pool visual tower output to (B, visual_dim). Qwen3.5 returns flattened patch tokens."""
         features = self._unwrap_visual_tensor(visual_out)
         if features.ndim == 3:
             return features.mean(dim=1)
-        if features.ndim == 2:
+        if features.ndim != 2:
+            return features.reshape(features.shape[0], -1, features.shape[-1]).mean(dim=1)
+
+        if grid_thw is None:
             return features
-        return features.reshape(features.shape[0], -1, features.shape[-1]).mean(dim=1)
+
+        grid = grid_thw.to(device=features.device)
+        if grid.ndim == 1:
+            grid = grid.unsqueeze(0)
+        batch_size = int(grid.shape[0])
+
+        # Already per-sample (B, D), e.g. pooler_output.
+        if features.shape[0] == batch_size:
+            return features
+
+        pooled: list[torch.Tensor] = []
+        start = 0
+        for i in range(batch_size):
+            if grid.shape[1] >= 3:
+                t, h, w = grid[i, 0], grid[i, 1], grid[i, 2]
+                num_tokens = int((t * h * w).item())
+            else:
+                num_tokens = int(grid[i].prod().item())
+            end = start + num_tokens
+            chunk = features[start:end]
+            if chunk.numel() == 0:
+                pooled.append(
+                    torch.zeros(features.shape[-1], device=features.device, dtype=features.dtype)
+                )
+            else:
+                pooled.append(chunk.mean(dim=0))
+            start = end
+
+        if start == features.shape[0] and len(pooled) == batch_size:
+            return torch.stack(pooled, dim=0)
+
+        # Fallback: uniform token split when grid metadata does not match length.
+        tokens_per = max(features.shape[0] // max(batch_size, 1), 1)
+        pooled = []
+        for i in range(batch_size):
+            chunk = features[i * tokens_per : (i + 1) * tokens_per]
+            if chunk.numel():
+                pooled.append(chunk.mean(dim=0))
+            else:
+                pooled.append(
+                    torch.zeros(features.shape[-1], device=features.device, dtype=features.dtype)
+                )
+        return torch.stack(pooled, dim=0)
 
     def _run_visual_tower(
         self,
@@ -228,7 +290,10 @@ class AWACQCritic(nn.Module):
                 inputs["pixel_values"],
                 inputs.get("image_grid_thw"),
             )
-            return self._pool_visual_features(visual_out).to(dtype=dtype)
+            return self._pool_visual_features(
+                visual_out,
+                inputs.get("image_grid_thw"),
+            ).to(dtype=dtype)
 
         # Fallback when backbone has no standalone visual module (e.g. some Qwen3.5 layouts).
         with torch.set_grad_enabled(any(p.requires_grad for p in self.qwen_vl_interface.parameters())):
