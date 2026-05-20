@@ -4,7 +4,61 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+_awac_count_physical_gpus() {
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -L 2>/dev/null | wc -l | tr -d ' '
+  else
+    echo 0
+  fi
+}
+
+_awac_count_visible_from_env() {
+  local cvd="${CUDA_VISIBLE_DEVICES:-}"
+  if [[ -z "${cvd}" ]]; then
+    echo 0
+    return
+  fi
+  local count=0
+  local part
+  IFS=',' read -ra _parts <<< "${cvd}"
+  for part in "${_parts[@]}"; do
+    part="${part//[[:space:]]/}"
+    if [[ -n "${part}" ]]; then
+      count=$((count + 1))
+    fi
+  done
+  echo "${count}"
+}
+
+_awac_build_gpu_list() {
+  local n="$1"
+  local out=""
+  local i
+  for ((i = 0; i < n; i++)); do
+    if [[ -n "${out}" ]]; then
+      out+=","
+    fi
+    out+="${i}"
+  done
+  echo "${out}"
+}
+
+# Default: use 8 GPUs on H200 nodes unless the scheduler already narrowed visibility.
+_PHYSICAL_GPUS="$(_awac_count_physical_gpus)"
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  if [[ "${_PHYSICAL_GPUS}" -ge 8 ]]; then
+    export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+  elif [[ "${_PHYSICAL_GPUS}" -gt 0 ]]; then
+    export CUDA_VISIBLE_DEVICES="$(_awac_build_gpu_list "${_PHYSICAL_GPUS}")"
+  else
+    export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+  fi
+fi
+
+_VISIBLE_FROM_ENV="$(_awac_count_visible_from_env)"
+# num_processes follows visible GPUs unless explicitly overridden.
+export num_processes="${num_processes:-${_VISIBLE_FROM_ENV}}"
+
 export WANDB_MODE=${WANDB_MODE:-online}
 export NO_ALBUMENTATIONS_UPDATE=${NO_ALBUMENTATIONS_UPDATE:-1}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
@@ -43,36 +97,32 @@ run_root_dir=${run_root_dir:-logs}
 run_id=${run_id:-awac_calvin_critic}
 save_interval=${save_interval:-5000}
 
-# Match num_processes to visible GPUs (avoid silent world_size=1 when 8 GPUs are requested).
-if [[ -n "${num_processes:-}" ]]; then
-  :
-elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
-  IFS=',' read -ra _AWAC_GPU_IDS <<< "${CUDA_VISIBLE_DEVICES}"
-  num_processes=${#_AWAC_GPU_IDS[@]}
-else
-  num_processes=8
-fi
-
 STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-python}
 ACCELERATE_LAUNCH=("${STAR_VLA_PYTHON}" -m accelerate.commands.launch)
 
-_visible_gpus="$("${STAR_VLA_PYTHON}" - <<'PY'
+_TORCH_VISIBLE="$("${STAR_VLA_PYTHON}" - <<'PY'
 import os
 import torch
-cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-if cuda_visible.strip():
-    print(len([x for x in cuda_visible.split(",") if x.strip() != ""]))
-else:
-    print(torch.cuda.device_count())
+# Must match the shell-exported CUDA_VISIBLE_DEVICES for this check.
+print(torch.cuda.device_count())
 PY
 )"
-echo "[awac-critic] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>} visible_gpus=${_visible_gpus} num_processes=${num_processes}"
-if [[ "${num_processes}" -gt "${_visible_gpus}" ]]; then
-  echo "[awac-critic] ERROR: num_processes=${num_processes} > visible_gpus=${_visible_gpus}" >&2
+
+echo "[awac-critic] physical_gpus(nvidia-smi)=${_PHYSICAL_GPUS}"
+echo "[awac-critic] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "[awac-critic] visible_gpus(env)=${_VISIBLE_FROM_ENV} visible_gpus(torch)=${_TORCH_VISIBLE} num_processes=${num_processes}"
+
+if [[ "${num_processes}" -lt 1 ]]; then
+  echo "[awac-critic] ERROR: no GPU detected; check nvidia-smi and CUDA_VISIBLE_DEVICES." >&2
+  exit 1
+fi
+if [[ "${_TORCH_VISIBLE}" -lt "${num_processes}" ]]; then
+  echo "[awac-critic] ERROR: torch sees ${_TORCH_VISIBLE} GPU(s) but num_processes=${num_processes}." >&2
+  echo "[awac-critic] Fix: export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 (or your Slurm allocation) before launch." >&2
   exit 1
 fi
 if [[ "${num_processes}" -lt 2 ]]; then
-  echo "[awac-critic] WARNING: num_processes=${num_processes}; training will run single-GPU (world_size=1)." >&2
+  echo "[awac-critic] WARNING: num_processes=1 -> DeepSpeed world_size=1." >&2
 fi
 
 output_dir=${run_root_dir}/${run_id}
@@ -91,11 +141,10 @@ cp "$0" "${output_dir}/"
 #   compute_rewards_on_the_fly=true assume_success_if_missing=true bash ...
 # This does not mutate parquet; reward/done are computed in the dataloader.
 
+# DeepSpeed launch: do NOT pass --multi_gpu (conflicts with DEEPSPEED config -> world_size=1).
 "${ACCELERATE_LAUNCH[@]}" \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${num_processes}" \
-  --multi_gpu \
-  --mixed_precision bf16 \
   starVLA/training/train_awac_critic.py \
   --config_yaml "${config_yaml}" \
   --framework.name "${Framework_name}" \

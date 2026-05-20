@@ -48,8 +48,9 @@ test -f "${ALLOWLIST_PATH}"
 echo "preflight_ok"
 
 echo "========== [4/4] Launch mixed AWAC critic training =========="
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
-export num_processes="${num_processes:-8}"
+# Leave CUDA_VISIBLE_DEVICES unset here unless you must pin GPUs; run_calvin_awac_critic.sh
+# will default to 0-7 when the node has >=8 GPUs. Slurm may already set CUDA_VISIBLE_DEVICES.
+unset num_processes
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
 export calvin_data_root="${CALVIN_DATA_ROOT}"
