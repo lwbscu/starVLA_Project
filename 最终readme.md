@@ -110,6 +110,18 @@ EVAL_PORT=6200 \
 
 评测结果在 `results/model_eval/...` 下，关注 `results.json` 中 Task 1~5 成功率和平均链长。
 
+如果旧 checkpoint 的 `config.yaml` 里保存的是已经不存在的 `playground/Pretrained_models/Qwen3.5-4B`，评测脚本会在本次 `results/final_single_ckpt_eval/log_*/patched_checkpoint/` 下生成只改 `base_vlm` 的评测副本，默认替换为：
+
+```text
+/inspire/qb-ilm2/project/26summer-camp-10/public/Qwen/Qwen3.5-4B
+```
+
+如需手动指定：
+
+```bash
+BASE_VLM_OVERRIDE=/absolute/path/to/Qwen3.5-4B ./最终测评脚本.sh
+```
+
 ## 5. TensorBoard 日志
 
 BC/LoRA：
